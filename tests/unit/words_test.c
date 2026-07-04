@@ -95,12 +95,19 @@ static void check_kernel_eq(const char *name,
 						 "%s n=%zu off=%zu pw=%u s=%d",
 						 name, n, off, pw, scan);
 					CHECK(msg, ra == rb);
-					if (ra && rb) {
-						CHECK(msg,
-						      a.lines == b.lines &&
-						      a.words == b.words &&
-						      a.last_is_ws ==
-							      b.last_is_ws);
+					if (ra && rb &&
+					    (a.lines != b.lines ||
+					     a.words != b.words ||
+					     a.last_is_ws != b.last_is_ws)) {
+						fprintf(stderr,
+							"  FAIL %s: kernel l=%llu w=%llu e=%u ref l=%llu w=%llu e=%u\n",
+							msg, a.lines, a.words,
+							a.last_is_ws, b.lines,
+							b.words, b.last_is_ws);
+						t_checks++;
+						t_fails++;
+					} else if (ra && rb) {
+						CHECK(msg, 1);
 					}
 				}
 			}
@@ -176,6 +183,13 @@ int main(void)
 		if (!setlocale(LC_ALL, locs[li]))
 			continue;
 		ws_init(&tal_ws);
+		fprintf(stderr, "  locale '%s': mb=%d utf8=%d luts_ok=%d ws={",
+			locs[li], tal_ws.multibyte, tal_ws.utf8,
+			tal_ws.luts_ok);
+		for (int k = 0; k < tal_ws.n_ws_bytes; k++)
+			fprintf(stderr, "%s%02x", k ? "," : "",
+				tal_ws.ws_bytes[k]);
+		fprintf(stderr, "} nsus=%d\n", tal_ws.n_sus_bytes);
 		if (!tal_ws.luts_ok)
 			continue;
 		state = 42;
