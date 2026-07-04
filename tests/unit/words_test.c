@@ -45,24 +45,39 @@ static size_t fill_mixed(unsigned char *p, size_t cap)
 	return n;
 }
 
-/* Byte-semantic reference for the kernels. The kernel contract is
- * tal_ws.kernel_ws — the derived byte SET — not raw is_ws[]: in multibyte
- * locales the set holds only ASCII separators; bytes >= 0x80 route through
- * decode in production, and macOS's isspace(0xA0) is true even in UTF-8
- * locales, polluting is_ws[] for a byte the mb paths never table-classify
- * (this reference and the kernels' scalar tails both got that wrong once). */
-static bool ref_lwc(const unsigned char *p, size_t n, unsigned prev_is_ws,
-		    struct lwc_out *out, bool scan)
+/* Byte-semantic reference for the kernels. The kernel contract: separator
+ * iff the byte is in tal_ws.kernel_ws (the derived byte SET — never raw
+ * is_ws[], which macOS pollutes at 0xA0 in UTF-8 locales) or covered by an
+ * L1 pattern match; hold back the tail per the kernels' rule. Matches are
+ * evaluated at EVERY position independently (overlap-ORed), exactly like
+ * the shifted-compare vector engine. */
+static size_t ref_lwc(const unsigned char *p, size_t n, unsigned prev_is_ws,
+		      struct lwc_out *out)
 {
 	unsigned long long lines = 0, words = 0;
 	unsigned last_nonws = !prev_is_ws;
+	size_t k = n;
+	size_t cover = 0;
 
-	for (size_t i = 0; i < n; i++) {
+	if (tal_ws.nmbws)
+		while (k > 0 && (tal_ws.suspect[p[k - 1]] ||
+				 (k > 1 && tal_ws.is3lead[p[k - 2]])))
+			k--;
+
+	for (size_t i = 0; i < k; i++) {
 		unsigned char b = p[i];
+		unsigned is_sep;
+		int m = tal_ws.nmbws ? tal_mbws_match(p + i, k - i) : 0;
 
-		if (scan && tal_ws.suspect[b])
-			return false;
-		unsigned nw = !tal_ws.kernel_ws[b];
+		if (m && (size_t)m > cover)
+			cover = (size_t)m;
+		if (cover) {
+			is_sep = 1;
+			cover--;
+		} else {
+			is_sep = tal_ws.kernel_ws[b];
+		}
+		unsigned nw = !is_sep;
 
 		lines += b == '\n';
 		words += nw & !last_nonws;
@@ -71,16 +86,17 @@ static bool ref_lwc(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	out->lines = lines;
 	out->words = words;
 	out->last_is_ws = !last_nonws;
-	return true;
+	return k;
 }
 
 static void check_kernel_eq(const char *name,
-			    bool (*fn)(const unsigned char *, size_t, unsigned,
-				       struct lwc_out *, bool),
+			    size_t (*fn)(const unsigned char *, size_t,
+					 unsigned, struct lwc_out *),
 			    const unsigned char *base, size_t len)
 {
-	static const size_t sizes[] = { 0,  1,  15,  16,  17,   31,   32,  33,
-					63, 64, 127, 255, 4095, 4096, 8192 };
+	static const size_t sizes[] = { 0,  1,  2,  3,  15,  16,  17,   31,
+					32, 33, 34, 63, 64,  127, 255,  257,
+					4095, 4096, 8191, 8192 };
 	char msg[128];
 
 	for (size_t s = 0; s < sizeof sizes / sizeof sizes[0]; s++) {
@@ -88,31 +104,26 @@ static void check_kernel_eq(const char *name,
 
 		for (size_t off = 0; off < 8; off += 7) {
 			for (unsigned pw = 0; pw < 2; pw++) {
-				for (int scan = 0; scan < 2; scan++) {
-					struct lwc_out a, b;
-					bool ra = fn(base + off, n, pw, &a,
-						     scan);
-					bool rb = ref_lwc(base + off, n, pw,
-							  &b, scan);
+				struct lwc_out a, b;
+				size_t ka = fn(base + off, n, pw, &a);
+				size_t kb = ref_lwc(base + off, n, pw, &b);
 
-					snprintf(msg, sizeof msg,
-						 "%s n=%zu off=%zu pw=%u s=%d",
-						 name, n, off, pw, scan);
-					CHECK(msg, ra == rb);
-					if (ra && rb &&
-					    (a.lines != b.lines ||
-					     a.words != b.words ||
-					     a.last_is_ws != b.last_is_ws)) {
-						fprintf(stderr,
-							"  FAIL %s: kernel l=%llu w=%llu e=%u ref l=%llu w=%llu e=%u\n",
-							msg, a.lines, a.words,
-							a.last_is_ws, b.lines,
-							b.words, b.last_is_ws);
-						t_checks++;
-						t_fails++;
-					} else if (ra && rb) {
-						CHECK(msg, 1);
-					}
+				snprintf(msg, sizeof msg,
+					 "%s n=%zu off=%zu pw=%u", name, n,
+					 off, pw);
+				CHECK(msg, ka == kb);
+				if (ka == kb &&
+				    (a.lines != b.lines || a.words != b.words ||
+				     a.last_is_ws != b.last_is_ws)) {
+					fprintf(stderr,
+						"  FAIL %s: kernel l=%llu w=%llu e=%u ref l=%llu w=%llu e=%u\n",
+						msg, a.lines, a.words,
+						a.last_is_ws, b.lines, b.words,
+						b.last_is_ws);
+					t_checks++;
+					t_fails++;
+				} else if (ka == kb) {
+					CHECK(msg, 1);
 				}
 			}
 		}

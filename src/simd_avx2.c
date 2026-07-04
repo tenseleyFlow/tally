@@ -115,15 +115,46 @@ static inline __m256i shift_in_prev(__m256i cur, __m256i prev)
 		cur, _mm256_permute2x128_si256(prev, cur, 0x21), 15);
 }
 
-bool tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
-		  struct lwc_out *out, bool scan_suspect)
+/* two-back vector: byte i = cur[i-2], bytes 0-1 = prev[30..31]. */
+static inline __m256i shift_in_prev2(__m256i cur, __m256i prev)
+{
+	return _mm256_alignr_epi8(
+		cur, _mm256_permute2x128_si256(prev, cur, 0x21), 14);
+}
+
+/* L1 pattern groups pre-broadcast for the dirty path. */
+struct l1g {
+	__m256i lead, second, lo, hi;
+	int len;
+};
+
+static inline __m256i in_set(__m256i v, __m256i lo, __m256i hi, __m256i nib)
+{
+	__m256i t = _mm256_and_si256(
+		_mm256_shuffle_epi8(lo, _mm256_and_si256(v, nib)),
+		_mm256_shuffle_epi8(
+			hi, _mm256_and_si256(_mm256_srli_epi16(v, 4), nib)));
+
+	/* members => nonzero; return 0xFF membership mask */
+	return _mm256_xor_si256(_mm256_cmpeq_epi8(t, _mm256_setzero_si256()),
+				_mm256_set1_epi8((char)0xFF));
+}
+
+size_t tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
+		    struct lwc_out *out)
 {
 	struct luts L;
+	struct l1g G[8];
+	int ng = 0;
 	unsigned long long lines = 0, words = 0;
 	/* nonws-mask carry: all-ones means "previous byte was a constituent". */
 	__m256i prevv = prev_is_ws ? _mm256_setzero_si256()
 				   : _mm256_set1_epi8((char)0xFF);
+	__m256i prev_sep = _mm256_setzero_si256();
+	__m256i prev_m3 = _mm256_setzero_si256();
+	bool prev_dirty = false;
 	unsigned last_nonws = !prev_is_ws;
+	size_t k = n;
 
 	L.nib = _mm256_set1_epi8(0x0F);
 	L.nl = _mm256_set1_epi8('\n');
@@ -136,26 +167,93 @@ bool tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	L.sus_hi = _mm256_broadcastsi128_si256(
 		_mm_loadu_si128((const __m128i *)(const void *)tal_ws.sus_lut_hi));
 
-	while (n >= 32) {
-		size_t block = n / 32;
+	if (tal_ws.nmbws) {
+		ng = tal_ws.ngroups;
+		for (int g = 0; g < ng; g++) {
+			const struct mbws_group *s = &tal_ws.groups[g];
+
+			G[g].lead = _mm256_set1_epi8((char)s->lead);
+			G[g].second = _mm256_set1_epi8((char)s->second);
+			G[g].lo = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+				(const __m128i *)(const void *)s->set_lo));
+			G[g].hi = _mm256_broadcastsi128_si256(_mm_loadu_si128(
+				(const __m128i *)(const void *)s->set_hi));
+			G[g].len = s->len;
+		}
+		/* Hold back a tail whose pattern can't be verified locally:
+		 * no match may start at k-1 (needs >= k) or, for a 3-byte
+		 * lead, at k-2. Held bytes go to the scalar oracle. */
+		while (k > 0 && (tal_ws.suspect[p[k - 1]] ||
+				 (k > 1 && tal_ws.is3lead[p[k - 2]])))
+			k--;
+	}
+
+	size_t rem = k;
+
+	/* Vector loop needs 2 bytes of in-span lookahead (loadu at p+2), so
+	 * it stops 34 short; the pattern-aware scalar tail finishes. */
+	while (rem >= 34) {
+		size_t block = (rem - 2) / 32;
 		__m256i lacc = _mm256_setzero_si256();
 		__m256i wacc = _mm256_setzero_si256();
 
 		if (block > 255)
 			block = 255;
-		n -= block * 32;
+		rem -= block * 32;
 		do {
 			__m256i v = _mm256_loadu_si256(
 				(const __m256i *)(const void *)p);
+			__m256i nonws = classify_nonws(&L, v);
 
-			if (scan_suspect) {
-				__m256i s = classify_suspect(&L, v);
+			if (ng) {
+				__m256i sus = classify_suspect(&L, v);
+				__m256i sep = _mm256_setzero_si256();
+				__m256i m3 = _mm256_setzero_si256();
 
-				if (!_mm256_testz_si256(s, s))
-					return false;
+				if (!_mm256_testz_si256(sus, sus) ||
+				    prev_dirty) {
+					__m256i v1 = _mm256_loadu_si256(
+						(const __m256i *)(const void *)(p + 1));
+					__m256i v2 = _mm256_loadu_si256(
+						(const __m256i *)(const void *)(p + 2));
+
+					for (int g = 0; g < ng; g++) {
+						__m256i hit = _mm256_cmpeq_epi8(
+							v, G[g].lead);
+
+						if (G[g].len == 2) {
+							hit = _mm256_and_si256(
+								hit,
+								in_set(v1, G[g].lo,
+								       G[g].hi, L.nib));
+						} else {
+							hit = _mm256_and_si256(
+								hit,
+								_mm256_cmpeq_epi8(
+									v1, G[g].second));
+							hit = _mm256_and_si256(
+								hit,
+								in_set(v2, G[g].lo,
+								       G[g].hi, L.nib));
+							m3 = _mm256_or_si256(m3, hit);
+						}
+						sep = _mm256_or_si256(sep, hit);
+					}
+					/* separator mask = starts + their
+					 * continuation bytes */
+					__m256i mask = _mm256_or_si256(
+						sep,
+						_mm256_or_si256(
+							shift_in_prev(sep, prev_sep),
+							shift_in_prev2(m3, prev_m3)));
+
+					nonws = _mm256_andnot_si256(mask, nonws);
+					prev_dirty = !_mm256_testz_si256(sep, sep);
+				}
+				prev_sep = sep;
+				prev_m3 = m3;
 			}
 
-			__m256i nonws = classify_nonws(&L, v);
 			__m256i starts =
 				_mm256_andnot_si256(shift_in_prev(nonws, prevv),
 						    nonws);
@@ -171,12 +269,34 @@ bool tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	}
 	last_nonws = ((unsigned)_mm256_movemask_epi8(prevv) >> 31) & 1u;
 
-	for (size_t i = 0; i < n; i++) {
-		unsigned char b = p[i];
+	/* Matches begun in the final vectors may cover the first tail bytes. */
+	unsigned m3m = (unsigned)_mm256_movemask_epi8(prev_m3);
+	unsigned sepm = (unsigned)_mm256_movemask_epi8(prev_sep);
+	size_t cover = 0;
 
-		if (scan_suspect && tal_ws.suspect[b])
-			return false;
-		unsigned nw = !tal_ws.kernel_ws[b];
+	if (m3m & 0x80000000u)
+		cover = 2;
+	else if ((sepm & 0x80000000u) || (m3m & 0x40000000u))
+		cover = 1;
+
+	for (size_t i = 0; i < rem; i++) {
+		unsigned char b = p[i];
+		unsigned is_sep;
+
+		if (cover) {
+			is_sep = 1;
+			cover--;
+		} else {
+			int m = ng ? tal_mbws_match(p + i, rem - i) : 0;
+
+			if (m) {
+				is_sep = 1;
+				cover = (size_t)m - 1;
+			} else {
+				is_sep = tal_ws.kernel_ws[b];
+			}
+		}
+		unsigned nw = !is_sep;
 
 		lines += b == '\n';
 		words += nw & !last_nonws;
@@ -185,7 +305,7 @@ bool tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	out->lines = lines;
 	out->words = words;
 	out->last_is_ws = !last_nonws;
-	return true;
+	return k;
 }
 
 #else

@@ -15,24 +15,25 @@ unsigned long long tal_nlcount_sse2(const unsigned char *p, size_t n);
 unsigned long long tal_nlcount_avx2(const unsigned char *p, size_t n);
 unsigned long long tal_nlcount_neon(const unsigned char *p, size_t n);
 
-/* Fused lines+words kernels (audit 02). Byte semantics only: separator iff
- * the byte is in tal_ws's byte set; every other byte (all >=0x80 included)
- * is a word constituent — exact for single-byte locales, and exact for UTF-8
- * locales except where multibyte separators occur, which is what the suspect
- * scan catches. prev_is_ws is the carry (1 at start of input: virtual
- * leading space). With scan_suspect, returns false the moment any byte hits
- * tal_ws's suspect set — *out is then invalid and the caller re-runs the
- * block through the scalar oracle (L2). Returns true otherwise. */
+/* Fused lines+words kernels (audit 02). Separator iff the byte is in
+ * tal_ws's derived byte set OR part of a multibyte separator sequence
+ * matched in-vector via the L1 pattern groups; every other byte (invalid
+ * UTF-8 included) is a word constituent — equal to decode semantics for
+ * word counting, because UTF-8 lead bytes never occur inside another
+ * character's encoding. prev_is_ws is the carry (1 at start of input:
+ * virtual leading space). Returns the number of bytes consumed: n, minus a
+ * 0-2 byte held-back tail when a potential separator can't be verified
+ * locally — the caller routes held bytes through the scalar oracle. */
 struct lwc_out {
 	unsigned long long lines, words;
 	unsigned last_is_ws;
 };
 
-bool tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
-		  struct lwc_out *out, bool scan_suspect);
-bool tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
-		  struct lwc_out *out, bool scan_suspect);
-bool tal_lwc_neon(const unsigned char *p, size_t n, unsigned prev_is_ws,
-		  struct lwc_out *out, bool scan_suspect);
+size_t tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
+		    struct lwc_out *out);
+size_t tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
+		    struct lwc_out *out);
+size_t tal_lwc_neon(const unsigned char *p, size_t n, unsigned prev_is_ws,
+		    struct lwc_out *out);
 
 #endif /* TAL_SIMD_H */

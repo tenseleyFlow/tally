@@ -48,12 +48,33 @@ struct ws_spec {
 	} mbws[64];
 	int nmbws;
 	bool suspect[256]; /* lead bytes of mbws sequences */
+	bool is3lead[256]; /* lead bytes of len-3 sequences (hold-back rule) */
+
+	/* L1 pattern groups (audit 02): sequences grouped by (lead[, second])
+	 * with the final byte as a set — len 2: lead + last-byte set; len 3:
+	 * lead + second + last-byte set. Kernels match these in-vector and
+	 * mark every byte of a match as a separator, which equals decode
+	 * semantics for word counting on valid AND invalid input (UTF-8 lead
+	 * bytes never appear inside another character's encoding). */
+	struct mbws_group {
+		unsigned char lead, second, len;
+		unsigned char set_lo[16], set_hi[16]; /* last-byte Mula LUTs */
+		unsigned char set_bytes[24];
+		int nset;
+	} groups[8];
+	int ngroups;
+	bool l1_ok; /* false: groups don't fit -> mb word counting is scalar */
 };
 
 extern struct ws_spec tal_ws;
 
 /* Separator test for a decoded character under tal_ws's rules. */
 bool tal_sep_wchar(unsigned long wc);
+
+/* L1 pattern match at p[0] with n bytes visible: returns the matched
+ * separator sequence length (2 or 3) or 0. Shared by kernel scalar tails
+ * and the unit-test reference. */
+int tal_mbws_match(const unsigned char *p, size_t n);
 
 /* Build tal_ws for the current locale + POSIXLY_CORRECT. In multibyte
  * locales probes iswspace over U+0080..U+3000 (no real libc defines space

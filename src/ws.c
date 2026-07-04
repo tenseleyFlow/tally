@@ -153,4 +153,76 @@ void ws_init(struct ws_spec *w)
 	if (w->n_ws_bytes > 0)
 		for (int i = 0; i < w->n_ws_bytes; i++)
 			w->kernel_ws[w->ws_bytes[i]] = 1;
+
+	/* L1 groups. Real UTF-8 locales yield ~5: (C2), (E1,9A), (E2,80),
+	 * (E2,81), (E3,80). Overflow => l1_ok false => scalar word counting
+	 * in this locale (parity preserved, speed sacrificed). */
+	w->l1_ok = true;
+	for (int i = 0; i < w->nmbws; i++) {
+		const struct mbws *m = &w->mbws[i];
+		struct mbws_group *g = NULL;
+
+		if (m->len < 2 || m->len > 3) {
+			w->l1_ok = false; /* can't happen for cp <= 0x3000 */
+			break;
+		}
+		if (m->len == 3)
+			w->is3lead[m->seq[0]] = true;
+		for (int k = 0; k < w->ngroups; k++) {
+			struct mbws_group *c = &w->groups[k];
+
+			if (c->len == m->len && c->lead == m->seq[0] &&
+			    (m->len == 2 || c->second == m->seq[1])) {
+				g = c;
+				break;
+			}
+		}
+		if (!g) {
+			if (w->ngroups == 8) {
+				w->l1_ok = false;
+				break;
+			}
+			g = &w->groups[w->ngroups++];
+			g->lead = m->seq[0];
+			g->second = m->len == 3 ? m->seq[1] : 0;
+			g->len = m->len;
+			g->nset = 0;
+		}
+		if (g->nset == (int)sizeof g->set_bytes) {
+			w->l1_ok = false;
+			break;
+		}
+		g->set_bytes[g->nset++] = m->seq[m->len - 1];
+	}
+	for (int k = 0; w->l1_ok && k < w->ngroups; k++) {
+		struct mbws_group *g = &w->groups[k];
+
+		/* build_luts caps at 16 members; the (E2,80) group holds ~15
+		 * across libcs. Overflow degrades to scalar, never to wrong. */
+		if (g->nset > 16 ||
+		    !build_luts(g->set_bytes, g->nset, g->set_lo, g->set_hi))
+			w->l1_ok = false;
+	}
+}
+
+int tal_mbws_match(const unsigned char *p, size_t n)
+{
+	if (n < 2)
+		return 0;
+	for (int k = 0; k < tal_ws.ngroups; k++) {
+		const struct mbws_group *g = &tal_ws.groups[k];
+
+		if (p[0] != g->lead)
+			continue;
+		if (g->len == 2) {
+			for (int i = 0; i < g->nset; i++)
+				if (p[1] == g->set_bytes[i])
+					return 2;
+		} else if (n >= 3 && p[1] == g->second) {
+			for (int i = 0; i < g->nset; i++)
+				if (p[2] == g->set_bytes[i])
+					return 3;
+		}
+	}
+	return 0;
 }

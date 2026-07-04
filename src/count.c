@@ -143,25 +143,23 @@ static int count_lines(int fd, const struct options *o, struct counts *c)
 	return 0;
 }
 
-/* Word counting (+ fused lines), the audit-02 block driver.
- * L0: the SIMD kernel treats every byte outside the derived separator set as
- * a word constituent — exact for single-byte locales, and exact for UTF-8
- * until a suspect byte (a multibyte-separator lead) appears.
- * L2: a block containing a suspect (or starting with pending decode bytes)
- * re-runs through the scalar oracle with carried state.
- * Non-UTF-8 multibyte locales and pathological byte sets: scalar throughout. */
+/* Word counting (+ fused lines), the audit-02 driver. The kernels handle
+ * multibyte separators in-vector (L1) and hold back a 0-2 byte tail when a
+ * potential separator can't be verified locally; held bytes go through the
+ * scalar oracle's pend machinery and the next chunk resumes after a short
+ * scalar prefix. Non-UTF-8 multibyte locales and pathological byte sets:
+ * scalar throughout. */
 
-typedef bool (*lwc_fn)(const unsigned char *, size_t, unsigned,
-		       struct lwc_out *, bool);
-
-#define WBLOCK 8192
+typedef size_t (*lwc_fn)(const unsigned char *, size_t, unsigned,
+			 struct lwc_out *);
 
 static lwc_fn pick_lwc_kernel(bool debug)
 {
 	lwc_fn fn = NULL;
 	const char *name = "scalar";
 
-	if (tal_ws.luts_ok && (!tal_ws.multibyte || tal_ws.utf8)) {
+	if (tal_ws.luts_ok && (!tal_ws.multibyte ||
+			       (tal_ws.utf8 && tal_ws.l1_ok))) {
 #if TAL_HAS_SSE2 && defined(__SSE2__)
 		fn = tal_lwc_sse2;
 		name = "sse2";
@@ -178,7 +176,7 @@ static lwc_fn pick_lwc_kernel(bool debug)
 	}
 	if (debug)
 		fprintf(stderr, "%s: using %s word kernel%s\n", tal_prog, name,
-			fn && tal_ws.multibyte ? " (suspect-gated)" : "");
+			fn && tal_ws.multibyte ? " (l1 patterns)" : "");
 	return fn;
 }
 
@@ -213,29 +211,37 @@ static int count_words(int fd, const struct options *o, struct counts *c)
 				tal_swc_sb(buf, len, c, &st);
 			continue;
 		}
-		if (!tal_ws.multibyte) {
-			/* Single-byte locale: the byte set is the whole rule;
-			 * no suspects can exist. */
-			struct lwc_out out;
 
-			(void)kern(buf, len, !st.in_word, &out, false);
+		size_t off = 0;
+
+		while (off < len) {
+			if (st.npend) {
+				/* Resolve carried decode bytes on a short
+				 * scalar prefix, then resume the kernel. */
+				size_t pre = len - off < 16 ? len - off : 16;
+
+				tal_swc_mb(buf + off, pre, c, &st);
+				off += pre;
+				continue;
+			}
+			struct lwc_out out;
+			size_t used = kern(buf + off, len - off, !st.in_word,
+					   &out);
+
 			c->lines += out.lines;
 			c->words += out.words;
 			st.in_word = !out.last_is_ws;
-			continue;
-		}
-		/* UTF-8: per-block optimistic kernel with scalar re-run. */
-		for (size_t off = 0; off < len; off += WBLOCK) {
-			size_t blen = len - off < WBLOCK ? len - off : WBLOCK;
-			struct lwc_out out;
+			off += used;
+			if (off < len) {
+				/* Held tail: feed a couple of bytes to the
+				 * oracle — it pends an incomplete sequence
+				 * for the next chunk or EOF finish. Always
+				 * advances, so adversarial all-suspect input
+				 * degrades to scalar speed, never loops. */
+				size_t hold = len - off < 2 ? len - off : 2;
 
-			if (st.npend == 0 &&
-			    kern(buf + off, blen, !st.in_word, &out, true)) {
-				c->lines += out.lines;
-				c->words += out.words;
-				st.in_word = !out.last_is_ws;
-			} else {
-				tal_swc_mb(buf + off, blen, c, &st);
+				tal_swc_mb(buf + off, hold, c, &st);
+				off += hold;
 			}
 		}
 	}

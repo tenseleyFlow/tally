@@ -86,14 +86,17 @@ cat "$corpus"/big-* "$corpus"/newline-dense "$corpus"/long-lines >/dev/null 2>&1
 # regression. Tight coverage for this cell comes from FreeBSD/Linux runs.
 bench_one c_big_ascii min 0.70 -c "$corpus/big-ascii"
 # The flagship (sprint 02): default invocation and -w, where the fused kernel
-# meets GNU's scalar word loop. big-typography and big-binary gate after L1
-# (audit 02 ship order — L2 scalar fallback dominates those corpora for now).
+# meets GNU's scalar word loop. Typography (E2-dense) and binary (random
+# suspects) exercise the L1 pattern path.
 bench_one default_big_ascii auto - "$corpus/big-ascii"
 bench_one default_big_utf8 auto - "$corpus/big-utf8"
+bench_one default_big_typography auto - "$corpus/big-typography"
+bench_one default_big_binary auto - "$corpus/big-binary"
 bench_one default_newline_dense auto - "$corpus/newline-dense"
 bench_one default_long_lines auto - "$corpus/long-lines"
 bench_one w_big_ascii auto - -w "$corpus/big-ascii"
 bench_one w_big_utf8 auto - -w "$corpus/big-utf8"
+bench_one w_big_typography auto - -w "$corpus/big-typography"
 # The -l cells are read()-bound ties against GNU's SIMD (audit 03 risk 1): a
 # 1.00 margin on min still coin-flips on ~2% run-to-run jitter (observed both
 # directions on dorado). 0.97 tolerates the jitter; the 16%-slower kernel the

@@ -83,44 +83,110 @@ static inline __m128i match_set(__m128i v, const unsigned char *bytes, int n)
 	return m;
 }
 
-bool tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
-		  struct lwc_out *out, bool scan_suspect)
+static inline __m128i shl1_from(__m128i cur, __m128i prev)
+{
+	return _mm_or_si128(_mm_slli_si128(cur, 1), _mm_srli_si128(prev, 15));
+}
+
+static inline __m128i shl2_from(__m128i cur, __m128i prev)
+{
+	return _mm_or_si128(_mm_slli_si128(cur, 2), _mm_srli_si128(prev, 14));
+}
+
+size_t tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
+		    struct lwc_out *out)
 {
 	const __m128i nl = _mm_set1_epi8('\n');
 	const __m128i ones = _mm_set1_epi8((char)0xFF);
 	unsigned long long lines = 0, words = 0;
 	__m128i prevv = prev_is_ws ? _mm_setzero_si128() : ones;
+	__m128i prev_sep = _mm_setzero_si128();
+	__m128i prev_m3 = _mm_setzero_si128();
+	bool prev_dirty = false;
 	unsigned last_nonws;
+	int ng = tal_ws.nmbws ? tal_ws.ngroups : 0;
+	size_t k = n;
 
-	while (n >= 16) {
-		size_t block = n / 16;
+	if (ng)
+		while (k > 0 && (tal_ws.suspect[p[k - 1]] ||
+				 (k > 1 && tal_ws.is3lead[p[k - 2]])))
+			k--;
+
+	size_t rem = k;
+
+	while (rem >= 18) {
+		size_t block = (rem - 2) / 16;
 		__m128i lacc = _mm_setzero_si128();
 		__m128i wacc = _mm_setzero_si128();
 
 		if (block > 255)
 			block = 255;
-		n -= block * 16;
+		rem -= block * 16;
 		do {
 			__m128i v = _mm_loadu_si128(
 				(const __m128i *)(const void *)p);
-
-			if (scan_suspect) {
-				__m128i s = match_set(v, tal_ws.sus_bytes,
-						      tal_ws.n_sus_bytes);
-
-				if (_mm_movemask_epi8(s))
-					return false;
-			}
-
 			__m128i nonws = _mm_xor_si128(
 				match_set(v, tal_ws.ws_bytes,
 					  tal_ws.n_ws_bytes),
 				ones);
-			/* prev-byte vector: cur << 1 byte | prev >> 15. */
-			__m128i shifted = _mm_or_si128(
-				_mm_slli_si128(nonws, 1),
-				_mm_srli_si128(prevv, 15));
-			__m128i starts = _mm_andnot_si128(shifted, nonws);
+
+			if (ng) {
+				__m128i sus = match_set(v, tal_ws.sus_bytes,
+							tal_ws.n_sus_bytes);
+				__m128i sep = _mm_setzero_si128();
+				__m128i m3 = _mm_setzero_si128();
+
+				if (_mm_movemask_epi8(sus) || prev_dirty) {
+					__m128i v1 = _mm_loadu_si128(
+						(const __m128i *)(const void *)(p + 1));
+					__m128i v2 = _mm_loadu_si128(
+						(const __m128i *)(const void *)(p + 2));
+
+					for (int g = 0; g < ng; g++) {
+						const struct mbws_group *s =
+							&tal_ws.groups[g];
+						__m128i hit = _mm_cmpeq_epi8(
+							v, _mm_set1_epi8(
+								(char)s->lead));
+
+						if (s->len == 2) {
+							hit = _mm_and_si128(
+								hit,
+								match_set(v1,
+									s->set_bytes,
+									s->nset));
+						} else {
+							hit = _mm_and_si128(
+								hit,
+								_mm_cmpeq_epi8(
+									v1,
+									_mm_set1_epi8(
+										(char)s->second)));
+							hit = _mm_and_si128(
+								hit,
+								match_set(v2,
+									s->set_bytes,
+									s->nset));
+							m3 = _mm_or_si128(m3, hit);
+						}
+						sep = _mm_or_si128(sep, hit);
+					}
+					__m128i mask = _mm_or_si128(
+						sep,
+						_mm_or_si128(
+							shl1_from(sep, prev_sep),
+							shl2_from(m3, prev_m3)));
+
+					nonws = _mm_andnot_si128(mask, nonws);
+					prev_dirty =
+						_mm_movemask_epi8(sep) != 0;
+				}
+				prev_sep = sep;
+				prev_m3 = m3;
+			}
+
+			__m128i starts = _mm_andnot_si128(
+				shl1_from(nonws, prevv), nonws);
 
 			wacc = _mm_sub_epi8(wacc, starts);
 			lacc = _mm_sub_epi8(lacc, _mm_cmpeq_epi8(v, nl));
@@ -132,12 +198,33 @@ bool tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	}
 	last_nonws = ((unsigned)_mm_movemask_epi8(prevv) >> 15) & 1u;
 
-	for (size_t i = 0; i < n; i++) {
-		unsigned char b = p[i];
+	unsigned m3m = (unsigned)_mm_movemask_epi8(prev_m3);
+	unsigned sepm = (unsigned)_mm_movemask_epi8(prev_sep);
+	size_t cover = 0;
 
-		if (scan_suspect && tal_ws.suspect[b])
-			return false;
-		unsigned nw = !tal_ws.kernel_ws[b];
+	if (m3m & 0x8000u)
+		cover = 2;
+	else if ((sepm & 0x8000u) || (m3m & 0x4000u))
+		cover = 1;
+
+	for (size_t i = 0; i < rem; i++) {
+		unsigned char b = p[i];
+		unsigned is_sep;
+
+		if (cover) {
+			is_sep = 1;
+			cover--;
+		} else {
+			int m = ng ? tal_mbws_match(p + i, rem - i) : 0;
+
+			if (m) {
+				is_sep = 1;
+				cover = (size_t)m - 1;
+			} else {
+				is_sep = tal_ws.kernel_ws[b];
+			}
+		}
+		unsigned nw = !is_sep;
 
 		lines += b == '\n';
 		words += nw & !last_nonws;
@@ -146,7 +233,7 @@ bool tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	out->lines = lines;
 	out->words = words;
 	out->last_is_ws = !last_nonws;
-	return true;
+	return k;
 }
 
 #else
