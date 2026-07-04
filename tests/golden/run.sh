@@ -97,7 +97,6 @@ normprog() {
 	sed "s#^$ref: #PROG: #; s#^$refbase: #PROG: #; \
 	     s#^$UUT: #PROG: #; s#^$uutbase: #PROG: #; \
 	     s#^wc: #PROG: #; s#^tally: #PROG: #; \
-	     s#Try '[^']*' --help'#Try 'PROG --help'#; \
 	     s#Try '[^']* --help'#Try 'PROG --help'#"
 }
 
