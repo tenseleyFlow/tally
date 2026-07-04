@@ -45,20 +45,12 @@ static size_t fill_mixed(unsigned char *p, size_t cap)
 	return n;
 }
 
-/* Byte-semantic reference for the kernels. The kernel contract is membership
- * in the DERIVED byte set (tal_ws.ws_bytes), not raw is_ws[]: in multibyte
- * locales the set holds only ASCII separators — bytes >= 0x80 route through
+/* Byte-semantic reference for the kernels. The kernel contract is
+ * tal_ws.kernel_ws — the derived byte SET — not raw is_ws[]: in multibyte
+ * locales the set holds only ASCII separators; bytes >= 0x80 route through
  * decode in production, and macOS's isspace(0xA0) is true even in UTF-8
- * locales, polluting is_ws[] for a byte the mb paths never table-classify. */
-static unsigned char set_ws[256];
-
-static void build_set_ws(void)
-{
-	memset(set_ws, 0, sizeof set_ws);
-	for (int i = 0; i < tal_ws.n_ws_bytes; i++)
-		set_ws[tal_ws.ws_bytes[i]] = 1;
-}
-
+ * locales, polluting is_ws[] for a byte the mb paths never table-classify
+ * (this reference and the kernels' scalar tails both got that wrong once). */
 static bool ref_lwc(const unsigned char *p, size_t n, unsigned prev_is_ws,
 		    struct lwc_out *out, bool scan)
 {
@@ -70,7 +62,7 @@ static bool ref_lwc(const unsigned char *p, size_t n, unsigned prev_is_ws,
 
 		if (scan && tal_ws.suspect[b])
 			return false;
-		unsigned nw = !set_ws[b];
+		unsigned nw = !tal_ws.kernel_ws[b];
 
 		lines += b == '\n';
 		words += nw & !last_nonws;
@@ -204,7 +196,6 @@ int main(void)
 		fprintf(stderr, "} nsus=%d\n", tal_ws.n_sus_bytes);
 		if (!tal_ws.luts_ok)
 			continue;
-		build_set_ws();
 		state = 42;
 		(void)fill_mixed(base, 8192 + 8);
 #if TAL_HAS_SSE2 && defined(__SSE2__)

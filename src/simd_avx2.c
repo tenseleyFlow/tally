@@ -176,7 +176,7 @@ bool tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 
 		if (scan_suspect && tal_ws.suspect[b])
 			return false;
-		unsigned nw = !tal_ws.is_ws[b];
+		unsigned nw = !tal_ws.kernel_ws[b];
 
 		lines += b == '\n';
 		words += nw & !last_nonws;

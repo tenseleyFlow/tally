@@ -33,6 +33,13 @@ struct ws_spec {
 	int n_sus_bytes;
 	bool luts_ok;
 
+	/* THE kernel separator contract, byte-indexed: exactly the ws_bytes
+	 * set. NOT the same as is_ws[] in multibyte locales — macOS's
+	 * isspace(0xA0) is true even under UTF-8, but bytes >= 0x80 must be
+	 * constituents to the kernels (decode handles them). Kernel vector
+	 * paths AND scalar tails classify via this table only. */
+	unsigned char kernel_ws[256];
+
 	/* Multibyte separators (utf8 mode), UTF-8 encoded, for the L1
 	 * discriminator and the scalar path's suspect handling. */
 	struct mbws {

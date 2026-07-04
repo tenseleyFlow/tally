@@ -149,4 +149,8 @@ void ws_init(struct ws_spec *w)
 				w->ws_lut_hi) &&
 		     build_luts(w->sus_bytes, w->n_sus_bytes, w->sus_lut_lo,
 				w->sus_lut_hi);
+
+	if (w->n_ws_bytes > 0)
+		for (int i = 0; i < w->n_ws_bytes; i++)
+			w->kernel_ws[w->ws_bytes[i]] = 1;
 }
