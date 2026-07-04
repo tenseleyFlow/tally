@@ -26,26 +26,29 @@ work=bench/.work
 mkdir -p "$work"
 
 rc=0
-# bench_one <label> <metric-auto> [args...] — hyperfine both tools on identical
-# argv (no shell: -N; env prefixes must go through `env`, hyperfine execs directly).
+# bench_one <label> <metric|auto> [args...] — hyperfine both tools on identical
+# argv (no shell: -N; env prefixes must go through `env`, hyperfine execs
+# directly). Explicit min: the -l/-c big-file near-ties (audit 03 risk 1) gate
+# on best-of-N so scheduler jitter can't flip a coin-toss mean.
 bench_one() {
-	_lbl=$1; shift
+	_lbl=$1; _metric=$2; shift 2
 	_csv="$work/m_$_lbl.csv"
 	hyperfine -N -w 3 -r 20 --export-csv "$_csv" \
 		"$TALLY $*" "$ref $*" >/dev/null 2>&1 || {
 		echo "bench: hyperfine failed for $_lbl"; rc=1; return; }
 	if [ -n "${TAL_PERF_METRIC:-}" ]; then
-		sh bench/gate.sh "$_csv" "$TAL_PERF_METRIC" "$_lbl" || rc=1
-		return
+		_metric=$TAL_PERF_METRIC
+	elif [ "$_metric" = auto ]; then
+		# min under 20ms (noise-robust), else mean (audit 03).
+		tmean=$(awk -F, 'NR>1 { split($1,w," "); n=split(w[1],q,"/"); b=q[n];
+			if (b=="wc" || b ~ /^wc-/) {print $2; exit} }' "$_csv")
+		if awk -v t="$tmean" 'BEGIN { exit !(t + 0 < 0.020) }'; then
+			_metric=min
+		else
+			_metric=mean
+		fi
 	fi
-	# Auto metric: min under 20ms (noise-robust), else mean (audit 03).
-	tmean=$(awk -F, 'NR>1 { split($1,w," "); n=split(w[1],q,"/"); b=q[n];
-		if (b=="wc" || b ~ /^wc-/) {print $2; exit} }' "$_csv")
-	if awk -v t="$tmean" 'BEGIN { exit !(t + 0 < 0.020) }'; then
-		sh bench/gate.sh "$_csv" min "$_lbl" || rc=1
-	else
-		sh bench/gate.sh "$_csv" mean "$_lbl" || rc=1
-	fi
+	sh bench/gate.sh "$_csv" "$_metric" "$_lbl" || rc=1
 }
 
 # Plumbing smoke: startup-only row, never gated (informational).
@@ -70,7 +73,9 @@ cat "$corpus"/big-* "$corpus"/newline-dense "$corpus"/long-lines >/dev/null 2>&1
 
 # Gated cells activate per sprint (audit 03 corpus x flags matrix; sprint 01
 # turns on -l/-c, sprint 02 the default invocation, etc.).
-bench_one lc_big_ascii      -c "$corpus/big-ascii"
-bench_one l_big_ascii       -l "$corpus/big-ascii"
+bench_one c_big_ascii min -c "$corpus/big-ascii"
+bench_one l_big_ascii min -l "$corpus/big-ascii"
+bench_one l_newline_dense min -l "$corpus/newline-dense"
+bench_one l_long_lines min -l "$corpus/long-lines"
 
 exit $rc

@@ -9,31 +9,65 @@
 
 #include "simd.h"
 
+/* 4 independent u8-lane accumulators (cmpeq yields -1; subtracting counts),
+ * 128 B per iteration, flushed through psadbw every 8 KiB block — well under
+ * the 255-adds-per-lane u8 bound. Single-accumulator loops serialize on the
+ * sub dependency and lose ~40% to GNU's AVX-512 kernel (measured, audit 03). */
+static inline unsigned long long hsum(__m256i acc)
+{
+	__m256i s = _mm256_sad_epu8(acc, _mm256_setzero_si256());
+
+	return (unsigned long long)_mm256_extract_epi64(s, 0) +
+	       (unsigned long long)_mm256_extract_epi64(s, 1) +
+	       (unsigned long long)_mm256_extract_epi64(s, 2) +
+	       (unsigned long long)_mm256_extract_epi64(s, 3);
+}
+
 unsigned long long tal_nlcount_avx2(const unsigned char *p, size_t n)
 {
 	const __m256i nl = _mm256_set1_epi8('\n');
-	const __m256i zero = _mm256_setzero_si256();
 	unsigned long long lines = 0;
-	__m256i acc = zero;
-	int iters = 0;
 
-	while (n >= 32) {
-		__m256i v = _mm256_loadu_si256((const __m256i *)(const void *)p);
+	while (n >= 128) {
+		size_t block = n / 128;
+		__m256i a0 = _mm256_setzero_si256();
+		__m256i a1 = _mm256_setzero_si256();
+		__m256i a2 = _mm256_setzero_si256();
+		__m256i a3 = _mm256_setzero_si256();
 
-		/* cmpeq lanes are 0xFF (-1); subtracting increments u8 counters. */
-		acc = _mm256_sub_epi8(acc, _mm256_cmpeq_epi8(v, nl));
-		p += 32;
-		n -= 32;
-		if (++iters == 255 || n < 32) {
-			__m256i sums = _mm256_sad_epu8(acc, zero);
+		/* Accumulators merge lane-wise before one hsum, so 4*block must
+		 * stay under 256 (all-newline input maxes every lane). */
+		if (block > 63)
+			block = 63; /* ~8 KiB per flush */
+		n -= block * 128;
+		do {
+			const __m256i *v = (const __m256i *)(const void *)p;
 
-			lines += (unsigned long long)_mm256_extract_epi64(sums, 0)
-			       + (unsigned long long)_mm256_extract_epi64(sums, 1)
-			       + (unsigned long long)_mm256_extract_epi64(sums, 2)
-			       + (unsigned long long)_mm256_extract_epi64(sums, 3);
-			acc = zero;
-			iters = 0;
-		}
+			a0 = _mm256_sub_epi8(a0,
+				_mm256_cmpeq_epi8(_mm256_loadu_si256(v), nl));
+			a1 = _mm256_sub_epi8(a1,
+				_mm256_cmpeq_epi8(_mm256_loadu_si256(v + 1), nl));
+			a2 = _mm256_sub_epi8(a2,
+				_mm256_cmpeq_epi8(_mm256_loadu_si256(v + 2), nl));
+			a3 = _mm256_sub_epi8(a3,
+				_mm256_cmpeq_epi8(_mm256_loadu_si256(v + 3), nl));
+			p += 128;
+		} while (--block);
+		lines += hsum(_mm256_add_epi8(_mm256_add_epi8(a0, a1),
+					      _mm256_add_epi8(a2, a3)));
+	}
+
+	if (n >= 32) {
+		__m256i acc = _mm256_setzero_si256();
+
+		do {
+			acc = _mm256_sub_epi8(acc,
+				_mm256_cmpeq_epi8(_mm256_loadu_si256(
+					(const __m256i *)(const void *)p), nl));
+			p += 32;
+			n -= 32;
+		} while (n >= 32); /* < 8 iterations: no overflow risk */
+		lines += hsum(acc);
 	}
 	for (size_t i = 0; i < n; i++)
 		lines += p[i] == '\n';
