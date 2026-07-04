@@ -27,6 +27,10 @@ EOF
 		./ "$USER@$host:$REMOTE_DIR/" || { rc=1; continue; }
 	ssh "$USER@$host" sh <<EOF || rc=1
 set -e
+# Non-interactive ssh sh gets a minimal PATH: Homebrew (macOS) and the usual
+# local prefixes would be invisible, hiding gmake/hyperfine.
+PATH="\$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/local/sbin"
+export PATH
 cd "\$HOME/$REMOTE_DIR"
 MAKE=make
 command -v gmake >/dev/null 2>&1 && MAKE=gmake
