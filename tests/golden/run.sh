@@ -339,11 +339,13 @@ check_quoting() {
 	done
 }
 
-# SIGPIPE stays at the default disposition (audit 00 claim 16): a reader that
-# quits must kill the writer with signal 13 (shell rc 141). Enough operands
-# that the rows overflow the pipe buffer, so the writer must block.
-check_sigpipe() {
-	_bin=$1; _label=$2
+# SIGPIPE parity (audit 00 claim 16): under the default disposition a quitting
+# reader kills the writer (141); where the environment inherits SIG_IGN
+# (GitHub Actions does), EPIPE surfaces as "write error" exit 1 in BOTH tools.
+# Assert the two binaries agree under identical conditions, and that the
+# result is one of those two shapes. Enough operands that the rows overflow
+# the pipe buffer, so the writer must block.
+sigpipe_rc() {
 	set --
 	i=0
 	while [ $i -lt 200 ]; do
@@ -354,11 +356,20 @@ check_sigpipe() {
 			"$corpus/tabs.txt" "$corpus/wide.txt"
 		i=$((i + 1))
 	done
-	{ "$_bin" -l "$@" 2>/dev/null; echo $? >"$work/sig.rc"; } |
+	{ "$sig_bin" -l "$@" 2>/dev/null; echo $? >"$work/sig.rc"; } |
 		head -n 1 >/dev/null
-	rc=$(cat "$work/sig.rc")
-	if [ "$rc" != 141 ]; then
-		echo "  DIFF [$_label/sigpipe]: rc=$rc (want 141)"
+	cat "$work/sig.rc"
+}
+
+check_sigpipe() {
+	_a=$1; _b=$2; _label=$3
+	sig_bin=$_a; ra=$(sigpipe_rc)
+	sig_bin=$_b; rb=$(sigpipe_rc)
+	ok=1
+	[ "$ra" = "$rb" ] || ok=0
+	[ "$ra" = 141 ] || [ "$ra" = 1 ] || ok=0
+	if [ "$ok" = 0 ]; then
+		echo "  DIFF [$_label/sigpipe]: rc a=$ra b=$rb (want equal, 141 or 1)"
 		echo "sigpipe" >>"$work/fails"
 	fi
 }
@@ -419,7 +430,7 @@ done
 check_positioned "$ref" "$ref" self
 check_dribble "$ref" self
 check_quoting "$ref" "$ref" self
-check_sigpipe "$ref" self
+check_sigpipe "$ref" "$ref" self
 if [ -s "$work/fails" ]; then
 	echo "GOLDEN: self-test FAILED — harness or corpus is non-deterministic"
 	exit 1
@@ -437,7 +448,7 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	check_dribble "$UUT" parity
 	if [ "$active" -ge 5 ]; then
 		check_quoting "$UUT" "$ref" parity
-		check_sigpipe "$UUT" parity
+		check_sigpipe "$UUT" "$ref" parity
 		check_writeerr "$UUT" parity
 		check_interleave "$UUT" parity
 	fi
