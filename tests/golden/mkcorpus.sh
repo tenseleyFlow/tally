@@ -37,6 +37,7 @@ printf 'a\r\nbb\r\n' > "$dir/crlf.txt"
 "$GEN" binary   42 65536  > "$dir/binary.bin"
 "$GEN" lines    42 16384  > "$dir/lines.txt"
 "$GEN" longline 42 300000 > "$dir/longline.txt" # crosses the 256 KiB buffer
+"$GEN" binary   5  2048   > "$dir/twok"         # positioned-fd -c check
 
 # Filename shapes.
 cp "$dir/noeol.txt" "$dir/sp ace.txt"

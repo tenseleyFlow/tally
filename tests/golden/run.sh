@@ -36,57 +36,80 @@ corpus="$work/corpus"
 sh tests/golden/mkcorpus.sh "$corpus" >/dev/null
 
 # Case matrix. One case per line:
-#   [%< FILE]  args...
+#   NN [%< FILE] args...
+# NN is the sprint that makes the case parity-ready: phase 1 (self-test) runs
+# every case; phase 2 runs cases with NN <= the number in PARITY_ACTIVE.
 # %< FILE redirects stdin from corpus file FILE (default stdin: /dev/null).
 # %C -> corpus root; %S -> the spaced-name file; %E -> an empty argv word
 # (both substituted after word-splitting, so they survive IFS). Grows every
 # sprint alongside the behavior it locks in.
 CASES='
-%C/empty
-%C/onebyte
-%C/nl
-%C/noeol.txt
-%C/spaces.txt
-%C/ascii.txt
-%C/utf8.txt
-%C/e2.txt
-%C/mbws.txt
-%C/binary.bin
-%C/lines.txt
-%C/longline.txt
-%C/nbsp.txt
-%C/ctrl.txt
-%C/crlf.txt
--c %C/ascii.txt
--l %C/ascii.txt
--w %C/mbws.txt
--m %C/binary.bin
--m %C/utf8.txt
--L %C/ctrl.txt
--L %C/crlf.txt
--lwmcL %C/utf8.txt
--cm %C/utf8.txt
--mc %C/utf8.txt
---lines %C/ascii.txt
-%C/ascii.txt -l
-%C/ascii.txt %C/utf8.txt
-%C/ascii.txt %C/utf8.txt %C/binary.bin
---total=always %C/ascii.txt
---total=only %C/ascii.txt %C/utf8.txt
---total=never %C/ascii.txt %C/utf8.txt
---files0-from=%C/files0.list
-%S
--l %S
-%E
-%C/nosuchfile
-%C/nosuchfile %C/ascii.txt
--c %C/nosuchfile
-%C
-%< ascii.txt
-%< utf8.txt -l
-%< binary.bin -c
-%< mbws.txt -w
-%< empty
+01 -c %C/ascii.txt
+01 -l %C/ascii.txt
+01 -l %C/lines.txt
+01 -l %C/longline.txt
+01 -l %C/binary.bin
+01 -l %C/empty
+01 -l %C/onebyte
+01 -l %C/nl
+01 -l %C/noeol.txt
+01 -l %C/crlf.txt
+01 -c %C/empty
+01 -c %C/twok
+01 -lc %C/ascii.txt
+01 -cl %C/utf8.txt
+01 -lc %C/longline.txt
+01 --lines %C/ascii.txt
+01 --line %C/ascii.txt
+01 --bytes %C/binary.bin
+01 %C/ascii.txt -l
+01 -l -c %C/e2.txt
+01 -l %S
+01 %E
+01 -l %C/nosuchfile
+01 -c %C/nosuchfile
+01 -l %C
+01 -l -
+01 %< ascii.txt -l
+01 %< utf8.txt -l
+01 %< binary.bin -c
+01 %< empty -l
+01 %< lines.txt -lc
+02 %C/empty
+02 %C/onebyte
+02 %C/nl
+02 %C/noeol.txt
+02 %C/spaces.txt
+02 %C/ascii.txt
+02 %C/utf8.txt
+02 %C/e2.txt
+02 %C/mbws.txt
+02 %C/binary.bin
+02 %C/lines.txt
+02 %C/longline.txt
+02 %C/nbsp.txt
+02 %C/ctrl.txt
+02 %C/crlf.txt
+02 -w %C/mbws.txt
+02 %S
+02 %C/nosuchfile
+02 %< ascii.txt
+02 %< mbws.txt -w
+02 %< empty
+03 -m %C/binary.bin
+03 -m %C/utf8.txt
+03 -L %C/ctrl.txt
+03 -L %C/crlf.txt
+03 -lwmcL %C/utf8.txt
+03 -cm %C/utf8.txt
+03 -mc %C/utf8.txt
+04 %C/ascii.txt %C/utf8.txt
+04 %C/ascii.txt %C/utf8.txt %C/binary.bin
+04 %C/nosuchfile %C/ascii.txt
+04 --total=always %C/ascii.txt
+04 --total=only %C/ascii.txt %C/utf8.txt
+04 --total=never %C/ascii.txt %C/utf8.txt
+04 --files0-from=%C/files0.list
 '
 
 # The tools report their program name as argv[0] (getopt lines: verbatim; error
@@ -156,12 +179,18 @@ check_deviation() { # $1=dev dir, $2=case; UUT results in a.*, ref results in o.
 	fi
 }
 
-# Compare two binaries over all CASES under one locale. Failures append to
-# $work/fails (the while loop is a pipeline subshell — a file escapes it).
+# Compare two binaries over CASES under one locale. Phase "parity" skips cases
+# whose sprint tag exceeds $active. Failures append to $work/fails (the while
+# loop is a pipeline subshell — a file escapes it).
 phase() {
 	_a=$1; _b=$2; _label=$3; _loc=$4
-	printf '%s\n' "$CASES" | while IFS= read -r c; do
-		[ -n "$c" ] || continue
+	printf '%s\n' "$CASES" | while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		tag=${line%% *}
+		c=${line#* }
+		if [ "$_label" = parity ] && [ "$tag" -gt "$active" ]; then
+			continue
+		fi
 		LC_ALL="$_loc" run_case "$_a" "$c"
 		cp "$work/o.out" "$work/a.out"; cp "$work/o.err" "$work/a.err"
 		cp "$work/o.rc" "$work/a.rc"
@@ -185,6 +214,36 @@ phase() {
 	done
 }
 
+# Integration extras (audit 04 §taxonomy). Both run ref-vs-ref in phase 1 and
+# tally-vs-ref in phase 2.
+# Positioned fd: the -c fast path must subtract SEEK_CUR (audit 00 claim 12).
+check_positioned() {
+	_a=$1; _b=$2; _label=$3
+	pa=$( { dd bs=1k skip=1 count=0 2>/dev/null; "$_a" -c; } <"$corpus/twok" )
+	pb=$( { dd bs=1k skip=1 count=0 2>/dev/null; "$_b" -c; } <"$corpus/twok" )
+	if [ "$pa" != "$pb" ]; then
+		echo "  DIFF [$_label/positioned-fd]: $pa vs $pb"
+		echo "positioned" >>"$work/fails"
+	fi
+}
+
+# Fragmentation invariance: bytes dribbled through a pipe in small writes must
+# count identically to the whole file (the wcstream bug class, audit 04).
+# Compare counts, not padding — the width estimator legitimately differs
+# between piped (non-regular, width 7) and redirected (regular) stdin.
+check_dribble() {
+	_bin=$1; _label=$2
+	for bs in 1 7 4096; do
+		da=$(dd if="$corpus/lines.txt" bs="$bs" 2>/dev/null \
+			| "$_bin" -lc | tr -s ' ')
+		db=$("$_bin" -lc <"$corpus/lines.txt" | tr -s ' ')
+		if [ "$da" != "$db" ]; then
+			echo "  DIFF [$_label/dribble bs=$bs]: '$da' vs '$db'"
+			echo "dribble" >>"$work/fails"
+		fi
+	done
+}
+
 # Available locales: C plus a UTF-8 one if the box has it.
 utf8=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
@@ -193,12 +252,17 @@ done
 locales="C"
 [ -n "$utf8" ] && locales="$locales $utf8"
 
+active=0
+[ -f tests/golden/PARITY_ACTIVE ] && active=$(cat tests/golden/PARITY_ACTIVE)
+
 : >"$work/fails"
 
 # Phase 1: ref vs ref (determinism self-test). Always runs.
 for L in $locales; do
 	phase "$ref" "$ref" "self" "$L"
 done
+check_positioned "$ref" "$ref" self
+check_dribble "$ref" self
 if [ -s "$work/fails" ]; then
 	echo "GOLDEN: self-test FAILED — harness or corpus is non-deterministic"
 	exit 1
@@ -209,6 +273,8 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	for L in $locales; do
 		phase "$UUT" "$ref" "parity" "$L"
 	done
+	check_positioned "$UUT" "$ref" parity
+	check_dribble "$UUT" parity
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs wc $REFTAG)"
