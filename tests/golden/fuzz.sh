@@ -38,12 +38,26 @@ rnd() { # rnd <n> -> 0..n-1
 }
 
 CLASSES="ascii utf8 e2 mbws binary ws lines longline"
-FLAGSETS=" |-l|-w|-c|-m|-L|-lw|-cm|-mc|-lwmcL|-wL|--total=always|--total=only"
+# Flag sets tagged by the sprint that implements them (same scheme as the
+# golden case matrix); only sets at or below PARITY_ACTIVE are drawn.
+FLAGSETS_ALL="01:-l|01:-c|01:-lc|02:|02:-w|02:-lw|02:-wc|03:-m|03:-L|03:-lwmcL|03:-cm|04:--total=always|04:--total=only"
+active=$(cat tests/golden/PARITY_ACTIVE)
+FLAGSETS=""
+nsets=0
+oldIFS=$IFS; IFS='|'
+for fs in $FLAGSETS_ALL; do
+	tag=${fs%%:*}
+	[ "$tag" -le "$active" ] || continue
+	FLAGSETS="$FLAGSETS${FLAGSETS:+|}${fs#*:}"
+	nsets=$((nsets + 1))
+done
+IFS=$oldIFS
 
-# Locale: prefer a UTF-8 one, else C.
-loc=C
+# UTF-8 locale if the box has one; iterations randomize C vs UTF-8 and
+# POSIXLY_CORRECT (the NBSP-rule axis).
+utf8loc=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
-	[ "$(LC_ALL=$L locale charmap 2>/dev/null)" = "UTF-8" ] && { loc=$L; break; }
+	[ "$(LC_ALL=$L locale charmap 2>/dev/null)" = "UTF-8" ] && { utf8loc=$L; break; }
 done
 
 fails=0
@@ -52,8 +66,12 @@ while [ "$i" -lt "$N" ]; do
 	i=$((i + 1))
 	c=$(( $(rnd 8) + 1 ))
 	class=$(echo "$CLASSES" | cut -d' ' -f"$c")
-	fs=$(( $(rnd 12) + 1 ))
+	fs=$(( $(rnd "$nsets") + 1 ))
 	flags=$(echo "$FLAGSETS" | cut -d'|' -f"$fs")
+	loc=C
+	[ -n "$utf8loc" ] && [ "$(rnd 3)" != 0 ] && loc=$utf8loc
+	pc=""
+	[ "$(rnd 4)" = 0 ] && pc="POSIXLY_CORRECT=1"
 	# Sizes biased toward the 256 KiB buffer boundary.
 	case $(rnd 4) in
 	0) size=$(( $(rnd 4096) )) ;;
@@ -65,9 +83,9 @@ while [ "$i" -lt "$N" ]; do
 	"$GEN" "$class" "$gseed" "$size" > "$work/f"
 
 	# shellcheck disable=SC2086
-	LC_ALL=$loc "$TALLY" $flags "$work/f" >"$work/a.out" 2>"$work/a.err"; ra=$?
+	env $pc LC_ALL=$loc "$TALLY" $flags "$work/f" >"$work/a.out" 2>"$work/a.err"; ra=$?
 	# shellcheck disable=SC2086
-	LC_ALL=$loc "$ref"   $flags "$work/f" >"$work/b.out" 2>"$work/b.err"; rb=$?
+	env $pc LC_ALL=$loc "$ref"   $flags "$work/f" >"$work/b.out" 2>"$work/b.err"; rb=$?
 	# Normalize: counts lines end in the (differing) file path's basename only
 	# when paths match — here both see the same path, so only program tokens
 	# on stderr need normalizing.
@@ -78,8 +96,8 @@ while [ "$i" -lt "$N" ]; do
 		fails=$((fails + 1))
 		mkdir -p "$keep"
 		cp "$work/f" "$keep/f-$class-$gseed-$size"
-		echo "FUZZ DIFF: class=$class gseed=$gseed size=$size flags='$flags' loc=$loc rc=$ra/$rb"
-		echo "  repro: tests/.work/gen $class $gseed $size > f && LC_ALL=$loc $TALLY $flags f | diff - <(LC_ALL=$loc $ref $flags f)"
+		echo "FUZZ DIFF: class=$class gseed=$gseed size=$size flags='$flags' loc=$loc pc='$pc' rc=$ra/$rb"
+		echo "  repro: tests/.work/gen $class $gseed $size > f; env $pc LC_ALL=$loc $TALLY $flags f; env $pc LC_ALL=$loc $ref $flags f"
 		diff "$work/a.out" "$work/b.out" | head -4
 	fi
 done

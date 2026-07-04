@@ -62,7 +62,6 @@ CASES='
 01 --lines %C/ascii.txt
 01 --line %C/ascii.txt
 01 --bytes %C/binary.bin
-01 %C/ascii.txt -l
 01 -l -c %C/e2.txt
 01 -l %S
 01 %E
@@ -91,10 +90,19 @@ CASES='
 02 %C/ctrl.txt
 02 %C/crlf.txt
 02 -w %C/mbws.txt
+02 -w %C/e2.txt
+02 -w %C/utf8.txt
+02 -lw %C/mbws.txt
+02 -w %C/mbsplit.txt
+02 -lw %C/mbsplit.txt
+02 -w %C/nbspsplit.txt
+02 -w %C/nbsp.txt
+02 -w %C/ctrl.txt
 02 %S
 02 %C/nosuchfile
 02 %< ascii.txt
 02 %< mbws.txt -w
+02 %< e2.txt -w
 02 %< empty
 03 -m %C/binary.bin
 03 -m %C/utf8.txt
@@ -105,6 +113,7 @@ CASES='
 03 -mc %C/utf8.txt
 04 %C/ascii.txt %C/utf8.txt
 04 %C/ascii.txt %C/utf8.txt %C/binary.bin
+04 %C/ascii.txt -l
 04 %C/nosuchfile %C/ascii.txt
 04 --total=always %C/ascii.txt
 04 --total=only %C/ascii.txt %C/utf8.txt
@@ -188,19 +197,22 @@ phase() {
 		[ -n "$line" ] || continue
 		tag=${line%% *}
 		c=${line#* }
-		if [ "$_label" = parity ] && [ "$tag" -gt "$active" ]; then
-			continue
-		fi
+		case "$_label" in
+		parity*) [ "$tag" -gt "$active" ] && continue ;;
+		esac
 		LC_ALL="$_loc" run_case "$_a" "$c"
 		cp "$work/o.out" "$work/a.out"; cp "$work/o.err" "$work/a.err"
 		cp "$work/o.rc" "$work/a.rc"
 		normprog <"$work/a.err" >"$work/a.errn"
 		LC_ALL="$_loc" run_case "$_b" "$c"
 		normprog <"$work/o.err" >"$work/o.errn"
-		if [ "$_label" = parity ] && _dev=$(deviation_dir "$c"); then
-			check_deviation "$_dev" "$c"
-			continue
-		fi
+		case "$_label" in
+		parity*)
+			if _dev=$(deviation_dir "$c"); then
+				check_deviation "$_dev" "$c"
+				continue
+			fi ;;
+		esac
 		ok=1
 		cmp -s "$work/a.out" "$work/o.out" || ok=0
 		cmp -s "$work/a.errn" "$work/o.errn" || ok=0
@@ -231,17 +243,36 @@ check_positioned() {
 # count identically to the whole file (the wcstream bug class, audit 04).
 # Compare counts, not padding — the width estimator legitimately differs
 # between piped (non-regular, width 7) and redirected (regular) stdin.
-check_dribble() {
-	_bin=$1; _label=$2
+# The -w rows split multibyte separators across 1-byte reads: the pend-carry
+# acid test.
+dribble_one() {
+	_bin=$1; _label=$2; _file=$3; _flags=$4
 	for bs in 1 7 4096; do
-		da=$(dd if="$corpus/lines.txt" bs="$bs" 2>/dev/null \
-			| "$_bin" -lc | tr -s ' ')
-		db=$("$_bin" -lc <"$corpus/lines.txt" | tr -s ' ')
+		da=$(dd if="$corpus/$_file" bs="$bs" 2>/dev/null \
+			| "$_bin" $_flags | tr -s ' ')
+		db=$("$_bin" $_flags <"$corpus/$_file" | tr -s ' ')
 		if [ "$da" != "$db" ]; then
-			echo "  DIFF [$_label/dribble bs=$bs]: '$da' vs '$db'"
+			echo "  DIFF [$_label/dribble $_file$_flags bs=$bs]: '$da' vs '$db'"
 			echo "dribble" >>"$work/fails"
 		fi
 	done
+}
+
+check_dribble() {
+	_bin=$1; _label=$2
+	dribble_one "$_bin" "$_label" lines.txt " -lc"
+	if [ "$active" -ge 2 ] || [ "$_label" = self ]; then
+		dribble_one "$_bin" "$_label" utf8.txt " -lw"
+		dribble_one "$_bin" "$_label" e2.txt " -w"
+	fi
+	# mbws (dense multibyte separators) asserts on tally ONLY: GNU 9.11
+	# genuinely miscounts fragmented multibyte separators (deviation 1 in
+	# .docs/deviations.md; repro: printf 'x\343\200\200\342\200\203y'
+	# whole=2 words, 1-byte-fragmented=3). tally is invariant and equals
+	# the ref's whole-file counts, which the parity cases pin.
+	if [ "$_label" != self ] && [ "$active" -ge 2 ]; then
+		dribble_one "$_bin" "$_label" mbws.txt " -w"
+	fi
 }
 
 # Available locales: C plus a UTF-8 one if the box has it.
@@ -257,9 +288,14 @@ active=0
 
 : >"$work/fails"
 
-# Phase 1: ref vs ref (determinism self-test). Always runs.
+# Phase 1: ref vs ref (determinism self-test). Always runs. The
+# POSIXLY_CORRECT axis flips the NBSP word rule AND getopt permutation
+# (audit 00 claim 8a, audit 01 §option parsing).
 for L in $locales; do
 	phase "$ref" "$ref" "self" "$L"
+	export POSIXLY_CORRECT=1
+	phase "$ref" "$ref" "self-pc" "$L"
+	unset POSIXLY_CORRECT
 done
 check_positioned "$ref" "$ref" self
 check_dribble "$ref" self
@@ -272,6 +308,9 @@ fi
 if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	for L in $locales; do
 		phase "$UUT" "$ref" "parity" "$L"
+		export POSIXLY_CORRECT=1
+		phase "$UUT" "$ref" "parity-pc" "$L"
+		unset POSIXLY_CORRECT
 	done
 	check_positioned "$UUT" "$ref" parity
 	check_dribble "$UUT" parity

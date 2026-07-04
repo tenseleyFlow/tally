@@ -39,6 +39,11 @@ printf 'a\r\nbb\r\n' > "$dir/crlf.txt"
 "$GEN" longline 42 300000 > "$dir/longline.txt" # crosses the 256 KiB buffer
 "$GEN" binary   5  2048   > "$dir/twok"         # positioned-fd -c check
 
+# Multibyte separators split exactly across the 256 KiB read boundary — the
+# cross-buffer acid test for the suspect/pend carry (audit 02 checklist).
+{ "$GEN" longline 9 262143; printf '\343\200\200x y\n'; } > "$dir/mbsplit.txt"
+{ "$GEN" longline 11 262143; printf '\302\240z w\n'; } > "$dir/nbspsplit.txt"
+
 # Filename shapes.
 cp "$dir/noeol.txt" "$dir/sp ace.txt"
 

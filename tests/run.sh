@@ -68,6 +68,25 @@ if ! sh tests/golden/run.sh; then
 	fail=1
 fi
 
+echo "== differential fuzz =="
+if ! FUZZ_N=${FUZZ_N:-40} FUZZ_SEED=${FUZZ_SEED:-1225} sh tests/golden/fuzz.sh; then
+	fail=1
+fi
+
+echo "== kernel engagement =="
+# A silent scalar fallback would pass every parity test and forfeit the perf
+# thesis (audit 04). On hardware the build supports, --debug must not report
+# the scalar tiers.
+if grep -qE "TAL_HAS_(SSE2|NEON) *1" config.h && [ -x ./tally ]; then
+	eng=$(./tally --debug -w /dev/null 2>&1; ./tally --debug -l /dev/null 2>&1)
+	if echo "$eng" | grep -q "scalar"; then
+		echo "ENGAGEMENT FAIL: SIMD-capable build reports a scalar kernel:"
+		echo "$eng"; fail=1
+	else
+		echo "$eng" | sed 's/^/  /'
+	fi
+fi
+
 if [ "$fail" = 0 ]; then
 	echo "ALL TESTS PASSED"
 else
