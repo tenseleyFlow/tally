@@ -23,6 +23,18 @@ AVX2_CFLAGS=""
 san="-fsanitize=address,undefined -fno-sanitize-recover=all"
 [ "${TAL_TEST_SANITIZE:-1}" = 0 ] && san=""
 
+# Unit tests exercise a UTF-8 leg via setlocale(LC_ALL, "") — make sure one is
+# actually in the environment (CI runners and ssh sessions often have none;
+# a silent C-only run hid a macOS-specific divergence once).
+if [ "$(locale charmap 2>/dev/null)" != "UTF-8" ]; then
+	for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
+		if [ "$(LC_ALL=$L locale charmap 2>/dev/null)" = "UTF-8" ]; then
+			LANG=$L; export LANG; unset LC_ALL
+			break
+		fi
+	done
+fi
+
 CFLAGS_T="-std=c11 -g -O1 $san $CONF_CFLAGS -Isrc -I. -D_FILE_OFFSET_BITS=64"
 
 # Library objects = all src/*.c and src/sys/*.c except main.c (tests provide
