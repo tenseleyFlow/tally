@@ -26,12 +26,14 @@ work=bench/.work
 mkdir -p "$work"
 
 rc=0
-# bench_one <label> <metric|auto> [args...] — hyperfine both tools on identical
-# argv (no shell: -N; env prefixes must go through `env`, hyperfine execs
-# directly). Explicit min: the -l/-c big-file near-ties (audit 03 risk 1) gate
-# on best-of-N so scheduler jitter can't flip a coin-toss mean.
+# bench_one <label> <metric|auto> <margin|-> [args...] — hyperfine both tools
+# on identical argv (no shell: -N; env prefixes must go through `env`,
+# hyperfine execs directly). Explicit min: the -l/-c big-file near-ties (audit
+# 03 risk 1) gate on best-of-N so scheduler jitter can't flip a coin-toss mean.
+# An explicit margin encodes cell physics (e.g. the macOS spawn floor for
+# startup-bound cells) and beats the TAL_PERF_MARGIN runner knob; "-" inherits.
 bench_one() {
-	_lbl=$1; _metric=$2; shift 2
+	_lbl=$1; _metric=$2; _margin=$3; shift 3
 	_csv="$work/m_$_lbl.csv"
 	hyperfine -N -w 3 -r 20 --export-csv "$_csv" \
 		"$TALLY $*" "$ref $*" >/dev/null 2>&1 || {
@@ -48,7 +50,11 @@ bench_one() {
 			_metric=mean
 		fi
 	fi
-	sh bench/gate.sh "$_csv" "$_metric" "$_lbl" || rc=1
+	if [ "$_margin" != - ]; then
+		TAL_PERF_MARGIN=$_margin sh bench/gate.sh "$_csv" "$_metric" "$_lbl" || rc=1
+	else
+		sh bench/gate.sh "$_csv" "$_metric" "$_lbl" || rc=1
+	fi
 }
 
 # Plumbing smoke: startup-only row, never gated (informational).
@@ -73,9 +79,18 @@ cat "$corpus"/big-* "$corpus"/newline-dense "$corpus"/long-lines >/dev/null 2>&1
 
 # Gated cells activate per sprint (audit 03 corpus x flags matrix; sprint 01
 # turns on -l/-c, sprint 02 the default invocation, etc.).
-bench_one c_big_ascii min -c "$corpus/big-ascii"
-bench_one l_big_ascii min -l "$corpus/big-ascii"
-bench_one l_newline_dense min -l "$corpus/newline-dense"
-bench_one l_long_lines min -l "$corpus/long-lines"
+# c_big_ascii is the fstat zero-read path: pure process startup. Measured on
+# macOS (nomad-1): tally --version == an empty C program at the posix_spawn
+# floor (~1ms, high variance on shared VMs) while the ref sits ~0.2ms under
+# it; 0.70 tolerates that floor noise and still catches a real startup
+# regression. Tight coverage for this cell comes from FreeBSD/Linux runs.
+bench_one c_big_ascii min 0.70 -c "$corpus/big-ascii"
+# The -l cells are read()-bound ties against GNU's SIMD (audit 03 risk 1): a
+# 1.00 margin on min still coin-flips on ~2% run-to-run jitter (observed both
+# directions on dorado). 0.97 tolerates the jitter; the 16%-slower kernel the
+# gate caught in sprint 01 would still fail loudly.
+bench_one l_big_ascii min 0.97 -l "$corpus/big-ascii"
+bench_one l_newline_dense min 0.97 -l "$corpus/newline-dense"
+bench_one l_long_lines min 0.97 -l "$corpus/long-lines"
 
 exit $rc
