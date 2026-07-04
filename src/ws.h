@@ -20,6 +20,9 @@ struct ws_spec {
 	/* Single-byte classification: in single-byte locales the whole rule;
 	 * in multibyte locales the ASCII fast path (GNU's wc_isspace table). */
 	unsigned char is_ws[256];
+	/* wc's wc_isprint (wc.c:863-865): -L width contribution of single-byte
+	 * chars (printable adds 1, unprintable adds 0). */
+	unsigned char is_print[256];
 
 	/* SIMD byte-set machinery (Mula 2-pshufb: bit-per-hi-nibble-group).
 	 * ws LUTs classify the separator byte set; suspect LUTs flag lead
@@ -83,25 +86,30 @@ int tal_mbws_match(const unsigned char *p, size_t n);
  * locales). */
 void ws_init(struct ws_spec *w);
 
-/* Scalar word-counting oracle (audit 02: written first; every SIMD kernel
- * must equal it, and it must equal the ref). Streams arbitrary chunk splits:
- * carry is in_word plus <=4 raw undecoded tail bytes decoded with a fresh
- * state per character — equivalent to GNU's mbstate carry (fragmentation
- * invariance probed on the ref, valid and invalid splits). */
+/* Scalar counting oracle (audit 02: written first; every SIMD kernel must
+ * equal it, and it must equal the ref). Streams arbitrary chunk splits:
+ * carry is in_word/linepos plus <=4 raw undecoded tail bytes decoded with a
+ * fresh state per character — equivalent to GNU's mbstate carry
+ * (fragmentation invariance probed on the ref, valid and invalid splits).
+ * Counts words+lines always; chars in multibyte mode; display width (-L
+ * semantics: tab stops, CR/FF resets, wcwidth) only when `width` is set —
+ * GNU gates c32width the same way (wc.c:593-598). */
 struct wstate {
 	bool in_word;
+	bool width; /* set by the caller when -L is requested */
+	unsigned long long linepos;
 	unsigned char pend[8];
 	unsigned npend;
 };
 
 void wstate_init(struct wstate *st);
-/* Single-byte locales: the whole rule is the byte table. */
+/* Single-byte locales: the whole rule is the byte tables. */
 void tal_swc_sb(const unsigned char *p, size_t n, struct counts *c,
 		struct wstate *st);
 /* Multibyte locales (any charset): decode + classify. */
 void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 		struct wstate *st);
-/* EOF: pending partial-sequence bytes are encoding errors (constituents). */
-void tal_swc_mb_finish(struct counts *c, struct wstate *st);
+/* EOF: pending bytes are encoding errors (constituents); flush linepos. */
+void tal_swc_finish(struct counts *c, struct wstate *st);
 
 #endif /* TAL_WS_H */

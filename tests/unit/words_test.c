@@ -140,14 +140,14 @@ static void check_oracle_splits(const unsigned char *p, size_t n)
 	memset(&whole, 0, sizeof whole);
 	wstate_init(&st);
 	tal_swc_mb(p, n, &whole, &st);
-	tal_swc_mb_finish(&whole, &st);
+	tal_swc_finish(&whole, &st);
 
 	for (size_t cut = 1; cut < n && cut < 300; cut++) {
 		memset(&split, 0, sizeof split);
 		wstate_init(&st);
 		tal_swc_mb(p, cut, &split, &st);
 		tal_swc_mb(p + cut, n - cut, &split, &st);
-		tal_swc_mb_finish(&split, &st);
+		tal_swc_finish(&split, &st);
 		if (split.words != whole.words ||
 		    split.lines != whole.lines) {
 			char msg[64];

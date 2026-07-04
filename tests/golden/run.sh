@@ -106,11 +106,31 @@ CASES='
 02 %< empty
 03 -m %C/binary.bin
 03 -m %C/utf8.txt
+03 -m %C/utf8odd.txt
+03 -m %C/invalid.txt
+03 -m %C/mbsplit.txt
+03 -m %C/e2.txt
+03 -m %C/empty
+03 -lm %C/mbwsodd.txt
 03 -L %C/ctrl.txt
 03 -L %C/crlf.txt
+03 -L %C/tabs.txt
+03 -L %C/wide.txt
+03 -L %C/spaces.txt
+03 -L %C/noeol.txt
+03 -L %C/longline.txt
+03 -L %C/invalid.txt
+03 -wL %C/wide.txt
 03 -lwmcL %C/utf8.txt
+03 -lwmcL %C/utf8odd.txt
+03 -lwmcL %C/invalid.txt
+03 -lwmcL %C/tabs.txt
 03 -cm %C/utf8.txt
 03 -mc %C/utf8.txt
+03 -m %S
+03 %< utf8odd.txt -m
+03 %< tabs.txt -L
+03 %< invalid.txt -lwmcL
 04 %C/ascii.txt %C/utf8.txt
 04 %C/ascii.txt %C/utf8.txt %C/binary.bin
 04 %C/ascii.txt -l

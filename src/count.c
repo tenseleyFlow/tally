@@ -2,6 +2,7 @@
 #include <stdalign.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -180,7 +181,11 @@ static lwc_fn pick_lwc_kernel(bool debug)
 	return fn;
 }
 
-static int count_words(int fd, const struct options *o, struct counts *c)
+/* The general path: words, and/or chars (multibyte), and/or -L. The fused
+ * kernel runs when only lines+words are needed; char counting (until the
+ * validated -m kernel lands) and display width take the scalar oracle. */
+static int count_general(int fd, const struct options *o, struct counts *c,
+			 bool count_chars)
 {
 	static bool ws_ready;
 	static lwc_fn kern;
@@ -192,6 +197,9 @@ static int count_words(int fd, const struct options *o, struct counts *c)
 		ws_ready = true;
 	}
 	wstate_init(&st);
+	st.width = o->linelength;
+
+	bool use_kern = kern && !o->linelength && !count_chars;
 
 	for (;;) {
 		ssize_t got = tal_read(fd, buf, TAL_IO_BUFSIZE);
@@ -204,7 +212,7 @@ static int count_words(int fd, const struct options *o, struct counts *c)
 
 		size_t len = (size_t)got;
 
-		if (!kern) {
+		if (!use_kern) {
 			if (tal_ws.multibyte)
 				tal_swc_mb(buf, len, c, &st);
 			else
@@ -245,27 +253,37 @@ static int count_words(int fd, const struct options *o, struct counts *c)
 			}
 		}
 	}
-	if (tal_ws.multibyte)
-		tal_swc_mb_finish(c, &st);
+	tal_swc_finish(c, &st);
 	return 0;
 }
 
 int count_fd(int fd, const struct options *o, struct fstatus *fst,
 	     struct counts *c)
 {
-	bool bytes_only = o->bytes && !o->lines && !o->words && !o->chars &&
-			  !o->linelength;
+	/* GNU's counter derivation (wc.c:384-394): in single-byte locales
+	 * chars are bytes, so -m rides the byte machinery (including the
+	 * zero-read fstat path when nothing else is requested). */
+	bool mb = MB_CUR_MAX > 1;
+	bool count_bytes = o->bytes || (!mb && o->chars);
+	bool count_chars = mb && o->chars;
+	bool complicated = o->words || o->linelength;
+	int err;
 
 	memset(c, 0, sizeof *c);
 
-	/* Advise the kernel only if this path will read() (wc.c:396-398);
-	 * bytes-only advises inside its own read fallback. */
-	if (!bytes_only)
+	if (count_bytes && !count_chars && !o->lines && !complicated) {
+		err = count_bytes_only(fd, fst, c);
+	} else {
+		/* Advise the kernel only if this path will read()
+		 * (wc.c:396-398). */
 		tal_fadvise_seq(fd);
+		if (!count_chars && !complicated)
+			err = count_lines(fd, o, c);
+		else
+			err = count_general(fd, o, c, count_chars);
+	}
 
-	if (bytes_only)
-		return count_bytes_only(fd, fst, c);
-	if (o->words)
-		return count_words(fd, o, c);
-	return count_lines(fd, o, c); /* chars/-L gated off in main */
+	if (o->chars && !mb)
+		c->chars = c->bytes; /* wc.c:676-677 */
+	return err;
 }

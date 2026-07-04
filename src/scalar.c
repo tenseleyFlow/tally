@@ -21,34 +21,86 @@ void wstate_init(struct wstate *st)
 	memset(st, 0, sizeof *st);
 }
 
-/* Single-byte locales: the byte table IS the whole rule (wc.c:619-674). */
+/* The wc.c per-character switch (audit 01 table), byte form. Width math runs
+ * only when st->width (-L requested), matching GNU's c32width gating. */
+static void classify_byte(unsigned char b, struct counts *c,
+			  struct wstate *st, bool *in_word)
+{
+	switch (b) {
+	case '\n':
+		c->lines++;
+		/* fall through */
+	case '\r':
+	case '\f':
+		if (st->linepos > c->linelength)
+			c->linelength = st->linepos;
+		st->linepos = 0;
+		*in_word = false;
+		break;
+	case '\t':
+		st->linepos += 8 - st->linepos % 8;
+		*in_word = false;
+		break;
+	case ' ':
+		st->linepos++;
+		/* fall through */
+	case '\v':
+		*in_word = false;
+		break;
+	default: {
+		bool in_word2 = !tal_ws.is_ws[b];
+
+		st->linepos += tal_ws.is_print[b];
+		c->words += (unsigned)(!*in_word & in_word2);
+		*in_word = in_word2;
+		break;
+	}
+	}
+}
+
+/* Single-byte locales: the byte tables ARE the whole rule (wc.c:619-674). */
 void tal_swc_sb(const unsigned char *p, size_t n, struct counts *c,
 		struct wstate *st)
 {
 	bool in_word = st->in_word;
-	unsigned long long words = 0, lines = 0;
 
-	for (size_t i = 0; i < n; i++) {
-		unsigned char b = p[i];
-		bool in_word2 = !tal_ws.is_ws[b];
+	if (!st->width) {
+		unsigned long long words = 0, lines = 0;
 
-		lines += b == '\n';
-		words += (unsigned)(!in_word & in_word2);
-		in_word = in_word2;
+		for (size_t i = 0; i < n; i++) {
+			unsigned char b = p[i];
+			bool in_word2 = !tal_ws.is_ws[b];
+
+			lines += b == '\n';
+			words += (unsigned)(!in_word & in_word2);
+			in_word = in_word2;
+		}
+		c->words += words;
+		c->lines += lines;
+	} else {
+		for (size_t i = 0; i < n; i++)
+			classify_byte(p[i], c, st, &in_word);
 	}
-	c->words += words;
-	c->lines += lines;
 	st->in_word = in_word;
 }
 
-static void classify_wc(unsigned long wc, unsigned long long *words,
-			unsigned long long *lines, bool *in_word)
+static void classify_wc(unsigned long wc, struct counts *c, struct wstate *st,
+			bool *in_word)
 {
-	*lines += wc == '\n';
+	if (wc < 0x80) {
+		classify_byte((unsigned char)wc, c, st, in_word);
+		return;
+	}
+	if (st->width) {
+		int w = wcwidth((wchar_t)wc);
+
+		if (w > 0)
+			st->linepos += (unsigned)w;
+	}
 	if (tal_sep_wchar(wc)) {
 		*in_word = false;
 	} else {
-		*words += !*in_word;
+		c->words += !*in_word;
 		*in_word = true;
 	}
 }
@@ -65,19 +117,32 @@ void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 {
 	size_t i = 0;
 	bool in_word = st->in_word;
-	unsigned long long words = 0, lines = 0;
 
 	while (i < n) {
 		if (st->npend == 0) {
-			/* Bulk ASCII via the byte table (GNU's fast path,
-			 * wc.c:503-510 + 586-587). */
-			while (i < n && p[i] < 0x80) {
-				unsigned char b = p[i++];
-				bool in_word2 = !tal_ws.is_ws[b];
+			/* Bulk ASCII via the byte tables (GNU's fast path,
+			 * wc.c:503-510). Each ASCII byte is one char. */
+			if (!st->width) {
+				unsigned long long words = 0, lines = 0,
+						   chars = 0;
 
-				lines += b == '\n';
-				words += (unsigned)(!in_word & in_word2);
-				in_word = in_word2;
+				while (i < n && p[i] < 0x80) {
+					unsigned char b = p[i++];
+					bool in_word2 = !tal_ws.is_ws[b];
+
+					chars++;
+					lines += b == '\n';
+					words += (unsigned)(!in_word & in_word2);
+					in_word = in_word2;
+				}
+				c->chars += chars;
+				c->words += words;
+				c->lines += lines;
+			} else {
+				while (i < n && p[i] < 0x80) {
+					c->chars++;
+					classify_byte(p[i++], c, st, &in_word);
+				}
 			}
 			if (i >= n)
 				break;
@@ -103,9 +168,9 @@ void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 				r = (size_t)-1;
 			}
 			if (r == (size_t)-1) {
-				/* Encoding error: one byte, non-space,
-				 * word constituent (wc.c:539-549). */
-				words += !in_word;
+				/* Encoding error: one byte, non-space, word
+				 * constituent, NOT a char (wc.c:531-549). */
+				c->words += !in_word;
 				in_word = true;
 				st->npend--;
 				memmove(st->pend, st->pend + 1, st->npend);
@@ -113,25 +178,26 @@ void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 			}
 			size_t k = r ? r : 1; /* r==0: decoded NUL, 1 byte */
 
-			classify_wc((unsigned long)wc, &words, &lines,
-				    &in_word);
+			c->chars++;
+			classify_wc((unsigned long)wc, c, st, &in_word);
 			st->npend -= (unsigned)k;
 			memmove(st->pend, st->pend + k, st->npend);
 		}
 	}
 out:
-	c->words += words;
-	c->lines += lines;
 	st->in_word = in_word;
 }
 
-void tal_swc_mb_finish(struct counts *c, struct wstate *st)
+void tal_swc_finish(struct counts *c, struct wstate *st)
 {
 	/* EOF with a pending valid prefix: GNU consumes each byte through the
-	 * error path — non-space constituents. */
+	 * error path — non-space constituents, not chars. */
 	for (unsigned j = 0; j < st->npend; j++) {
 		c->words += !st->in_word;
 		st->in_word = true;
 	}
 	st->npend = 0;
+	/* A final line without '\n' still counts for -L (wc.c:616-617). */
+	if (st->linepos > c->linelength)
+		c->linelength = st->linepos;
 }

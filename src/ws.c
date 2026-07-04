@@ -102,6 +102,7 @@ void ws_init(struct ws_spec *w)
 		w->is_ws[i] = (unsigned char)(isspace(i) != 0 ||
 					      (!w->posix_correct &&
 					       is_nbspace(cp)));
+		w->is_print[i] = (unsigned char)(isprint(i) != 0);
 	}
 
 	/* SIMD byte set: full table in single-byte locales; ASCII part in
