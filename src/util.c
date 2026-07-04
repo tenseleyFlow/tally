@@ -1,10 +1,39 @@
 #include <errno.h>
+#include <langinfo.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "util.h"
+
+const char *tal_prog = "tally";
+
+void tal_set_program(const char *argv0)
+{
+	const char *slash = strrchr(argv0, '/');
+
+	tal_prog = slash ? slash + 1 : argv0;
+}
+
+static int locale_is_utf8(void)
+{
+	static signed char cached; /* 0 unknown, 1 yes, -1 no */
+
+	if (!cached)
+		cached = strcmp(nl_langinfo(CODESET), "UTF-8") == 0 ? 1 : -1;
+	return cached > 0;
+}
+
+const char *tal_qs(void)
+{
+	return locale_is_utf8() ? "\342\200\230" : "'"; /* U+2018 */
+}
+
+const char *tal_qe(void)
+{
+	return locale_is_utf8() ? "\342\200\231" : "'"; /* U+2019 */
+}
 
 char *tal_u64tostr(unsigned long long v, char *buf)
 {
@@ -20,7 +49,8 @@ char *tal_u64tostr(unsigned long long v, char *buf)
 
 static void verror(int errnum, const char *fmt, va_list ap)
 {
-	fputs("tally: ", stderr);
+	fputs(tal_prog, stderr);
+	fputs(": ", stderr);
 	vfprintf(stderr, fmt, ap);
 	if (errnum)
 		fprintf(stderr, ": %s", strerror(errnum));
