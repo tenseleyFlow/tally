@@ -89,14 +89,19 @@ void ws_init(struct ws_spec *w)
 	w->utf8 = strcmp(nl_langinfo(CODESET), "UTF-8") == 0;
 
 	/* Byte table, built exactly like wc's (wc.c:866-868): isspace plus
-	 * the byte whose wide char is NBSP-family (FreeBSD C locale: 0xA0). */
+	 * the byte whose wide char is NBSP-family. Where btowc fails in a
+	 * single-byte locale (glibc's ASCII-only C locale on byte 0xA0),
+	 * gnulib's btoc32 — what the ref actually calls — still yields the
+	 * byte value as the code point; probed on glibc: 0xA0 separates
+	 * words in LC_ALL=C, all other high bytes don't. Mirror that. */
 	for (int i = 0; i < 256; i++) {
 		wint_t wc = btowc(i);
+		unsigned long cp = (wc != WEOF) ? (unsigned long)wc
+			: (!w->multibyte ? (unsigned long)i : 0);
 
 		w->is_ws[i] = (unsigned char)(isspace(i) != 0 ||
 					      (!w->posix_correct &&
-					       wc != WEOF &&
-					       is_nbspace((unsigned long)wc)));
+					       is_nbspace(cp)));
 	}
 
 	/* SIMD byte set: full table in single-byte locales; ASCII part in
