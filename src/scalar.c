@@ -1,7 +1,12 @@
-#include "simd.h"
+#include <string.h>
+#include <wchar.h>
 
-/* Parity oracle and last-resort fallback. Every SIMD kernel must equal this
- * function on every input (unit + fuzz enforced). */
+#include "simd.h"
+#include "ws.h"
+
+/* Parity oracles and last-resort fallbacks. Every SIMD kernel must equal
+ * these functions on every input (unit + fuzz enforced). */
+
 unsigned long long tal_nlcount_scalar(const unsigned char *p, size_t n)
 {
 	unsigned long long lines = 0;
@@ -9,4 +14,124 @@ unsigned long long tal_nlcount_scalar(const unsigned char *p, size_t n)
 	for (size_t i = 0; i < n; i++)
 		lines += p[i] == '\n';
 	return lines;
+}
+
+void wstate_init(struct wstate *st)
+{
+	memset(st, 0, sizeof *st);
+}
+
+/* Single-byte locales: the byte table IS the whole rule (wc.c:619-674). */
+void tal_swc_sb(const unsigned char *p, size_t n, struct counts *c,
+		struct wstate *st)
+{
+	bool in_word = st->in_word;
+	unsigned long long words = 0, lines = 0;
+
+	for (size_t i = 0; i < n; i++) {
+		unsigned char b = p[i];
+		bool in_word2 = !tal_ws.is_ws[b];
+
+		lines += b == '\n';
+		words += (unsigned)(!in_word & in_word2);
+		in_word = in_word2;
+	}
+	c->words += words;
+	c->lines += lines;
+	st->in_word = in_word;
+}
+
+static void classify_wc(unsigned long wc, unsigned long long *words,
+			unsigned long long *lines, bool *in_word)
+{
+	*lines += wc == '\n';
+	if (tal_sep_wchar(wc)) {
+		*in_word = false;
+	} else {
+		*words += !*in_word;
+		*in_word = true;
+	}
+}
+
+/* Multibyte locales, any charset. Pending partial sequences carry as RAW
+ * bytes and every character decodes with a fresh state: equivalent to GNU's
+ * mbstate carry for stateless charsets (fragmentation invariance probed on
+ * the ref for valid AND invalid splits), and it lets the error path consume
+ * rejected bytes one at a time exactly like wc.c:531-549. Stateful shift
+ * encodings (ISO-2022) would need real mbstate carry; no target libc ships
+ * such locales. */
+void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
+		struct wstate *st)
+{
+	size_t i = 0;
+	bool in_word = st->in_word;
+	unsigned long long words = 0, lines = 0;
+
+	while (i < n) {
+		if (st->npend == 0) {
+			/* Bulk ASCII via the byte table (GNU's fast path,
+			 * wc.c:503-510 + 586-587). */
+			while (i < n && p[i] < 0x80) {
+				unsigned char b = p[i++];
+				bool in_word2 = !tal_ws.is_ws[b];
+
+				lines += b == '\n';
+				words += (unsigned)(!in_word & in_word2);
+				in_word = in_word2;
+			}
+			if (i >= n)
+				break;
+		}
+		while (st->npend < sizeof st->pend && i < n)
+			st->pend[st->npend++] = p[i++];
+
+		while (st->npend) {
+			mbstate_t ms;
+			wchar_t wc;
+			size_t r;
+
+			memset(&ms, 0, sizeof ms);
+			r = mbrtowc(&wc, (const char *)st->pend, st->npend,
+				    &ms);
+			if (r == (size_t)-2) {
+				if (i < n && st->npend < sizeof st->pend)
+					break; /* refill */
+				if (i >= n)
+					goto out; /* carry across chunks */
+				/* pend full yet incomplete: no real charset
+				 * needs >8 bytes — treat lead as an error. */
+				r = (size_t)-1;
+			}
+			if (r == (size_t)-1) {
+				/* Encoding error: one byte, non-space,
+				 * word constituent (wc.c:539-549). */
+				words += !in_word;
+				in_word = true;
+				st->npend--;
+				memmove(st->pend, st->pend + 1, st->npend);
+				continue;
+			}
+			size_t k = r ? r : 1; /* r==0: decoded NUL, 1 byte */
+
+			classify_wc((unsigned long)wc, &words, &lines,
+				    &in_word);
+			st->npend -= (unsigned)k;
+			memmove(st->pend, st->pend + k, st->npend);
+		}
+	}
+out:
+	c->words += words;
+	c->lines += lines;
+	st->in_word = in_word;
+}
+
+void tal_swc_mb_finish(struct counts *c, struct wstate *st)
+{
+	/* EOF with a pending valid prefix: GNU consumes each byte through the
+	 * error path — non-space constituents. */
+	for (unsigned j = 0; j < st->npend; j++) {
+		c->words += !st->in_word;
+		st->in_word = true;
+	}
+	st->npend = 0;
 }

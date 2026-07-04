@@ -42,6 +42,7 @@ SRC = \
 	src/simd_neon.c \
 	src/simd_sse2.c \
 	src/util.c \
+	src/ws.c \
 	src/sys/detect.c
 OBJ = $(SRC:.c=.o)
 DEP = $(OBJ:.o=.d)

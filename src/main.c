@@ -111,10 +111,10 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* Scaffolding gates, removed as the sprints land (02: words/-L via the
-	 * fused kernel; 03: chars; 04: multi-file, --total, --files0-from). */
-	if (o.words || o.chars || o.linelength)
-		tal_die(2, 0, "counter not implemented yet (sprint 02/03)");
+	/* Scaffolding gates, removed as the sprints land (03: chars and -L;
+	 * 04: multi-file, --total, --files0-from). */
+	if (o.chars || o.linelength)
+		tal_die(2, 0, "counter not implemented yet (sprint 03)");
 	if (o.files_from)
 		tal_die(2, 0, "--files0-from not implemented yet (sprint 04)");
 	if (o.total != TOTAL_AUTO)

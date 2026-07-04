@@ -11,6 +11,7 @@
 #include "simd.h"
 #include "sys/detect.h"
 #include "util.h"
+#include "ws.h"
 
 /* One file processed at a time; a single static aligned buffer serves every
  * read path (no allocation on the hot path). */
@@ -142,6 +143,40 @@ static int count_lines(int fd, const struct options *o, struct counts *c)
 	return 0;
 }
 
+/* Word counting (+ fused lines): scalar oracle path; the SIMD block driver
+ * replaces the inner call per audit 02 (L0/L1/L2). */
+static int count_words(int fd, const struct options *o, struct counts *c)
+{
+	static bool ws_ready;
+	struct wstate st;
+
+	if (!ws_ready) {
+		ws_init(&tal_ws);
+		ws_ready = true;
+		if (o->debug)
+			fprintf(stderr, "%s: using scalar word kernel\n",
+				tal_prog);
+	}
+	wstate_init(&st);
+
+	for (;;) {
+		ssize_t got = tal_read(fd, buf, TAL_IO_BUFSIZE);
+
+		if (got < 0)
+			return errno;
+		if (got == 0)
+			break;
+		c->bytes += (unsigned long long)got;
+		if (tal_ws.multibyte)
+			tal_swc_mb(buf, (size_t)got, c, &st);
+		else
+			tal_swc_sb(buf, (size_t)got, c, &st);
+	}
+	if (tal_ws.multibyte)
+		tal_swc_mb_finish(c, &st);
+	return 0;
+}
+
 int count_fd(int fd, const struct options *o, struct fstatus *fst,
 	     struct counts *c)
 {
@@ -157,5 +192,7 @@ int count_fd(int fd, const struct options *o, struct fstatus *fst,
 
 	if (bytes_only)
 		return count_bytes_only(fd, fst, c);
-	return count_lines(fd, o, c); /* words/chars/-L gated off in main */
+	if (o->words)
+		return count_words(fd, o, c);
+	return count_lines(fd, o, c); /* chars/-L gated off in main */
 }
