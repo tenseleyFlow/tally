@@ -461,6 +461,65 @@ size_t tal_u8count_avx2(const unsigned char *p, size_t n,
 	return consumed;
 }
 
+size_t tal_lscan_avx2(const unsigned char *p, size_t n,
+		      unsigned long long *linepos, unsigned long long *maxlen)
+{
+	const __m256i nlv = _mm256_set1_epi8('\n');
+	unsigned long long lp = *linepos, ml = *maxlen;
+	size_t consumed = 0;
+
+	while (n - consumed >= 32) {
+		__m256i v = _mm256_loadu_si256(
+			(const __m256i *)(const void *)(p + consumed));
+		__m256i isnl = _mm256_cmpeq_epi8(v, nlv);
+		/* printable ASCII: 0x20 <= b <= 0x7E */
+		__m256i plain = range_in(v, 0x20, 0x7E);
+		unsigned special = ~(unsigned)_mm256_movemask_epi8(
+			_mm256_or_si256(plain, isnl));
+
+		if (special)
+			break;
+
+		unsigned nlm = (unsigned)_mm256_movemask_epi8(isnl);
+
+		if (!nlm) {
+			lp += 32;
+		} else {
+			unsigned prev = 0;
+
+			while (nlm) {
+				unsigned j = (unsigned)__builtin_ctz(nlm);
+
+				lp += j - prev;
+				if (lp > ml)
+					ml = lp;
+				lp = 0;
+				prev = j + 1;
+				nlm &= nlm - 1;
+			}
+			lp += 32 - prev;
+		}
+		consumed += 32;
+	}
+	while (consumed < n) {
+		unsigned char b = p[consumed];
+
+		if (b == '\n') {
+			if (lp > ml)
+				ml = lp;
+			lp = 0;
+		} else if (b >= 0x20 && b <= 0x7E) {
+			lp++;
+		} else {
+			break; /* special: oracle window */
+		}
+		consumed++;
+	}
+	*linepos = lp;
+	*maxlen = ml;
+	return consumed;
+}
+
 #else
 typedef int tal_simd_avx2_unused; /* ISO C forbids an empty translation unit */
 #endif

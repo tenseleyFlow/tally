@@ -183,6 +183,66 @@ static lwc_fn pick_lwc_kernel(bool debug)
 
 typedef size_t (*u8_fn)(const unsigned char *, size_t, unsigned long long *,
 			unsigned long long *);
+typedef size_t (*lscan_fn)(const unsigned char *, size_t,
+			   unsigned long long *, unsigned long long *);
+
+static lscan_fn pick_lscan_kernel(bool debug)
+{
+	lscan_fn fn = NULL;
+	const char *name = "scalar";
+
+	/* The scanner assumes 0x20-0x7E are width-1 printable characters:
+	 * true in single-byte locales and UTF-8 (never continuations), false
+	 * in shift encodings — those take the oracle. */
+	if (!tal_ws.multibyte || tal_ws.utf8) {
+#if TAL_HAS_SSE2 && defined(__SSE2__)
+		fn = tal_lscan_sse2;
+		name = "sse2";
+#elif TAL_HAS_NEON && defined(__ARM_NEON)
+		fn = tal_lscan_neon;
+		name = "neon";
+#endif
+#if TAL_HAS_AVX2
+		if (tal_cpu_has_avx2()) {
+			fn = tal_lscan_avx2;
+			name = "avx2";
+		}
+#endif
+	}
+	if (debug)
+		fprintf(stderr, "%s: using %s width scanner\n", tal_prog,
+			name);
+	return fn;
+}
+
+/* One chunk of the -L pass. The scanner handles printable-ASCII spans;
+ * special bytes (tabs, CR/FF, multibyte, controls) take a small oracle
+ * window, which owns the full width semantics via *lst. Only linelength is
+ * taken from this pass; the window's word/char/line counts land in the
+ * throwaway *ltmp. */
+static void lscan_chunk(lscan_fn lk, const unsigned char *p, size_t len,
+			struct counts *ltmp, struct wstate *lst)
+{
+	size_t off = 0;
+
+	while (off < len) {
+		if (lst->npend == 0) {
+			size_t used = lk(p + off, len - off, &lst->linepos,
+					 &ltmp->linelength);
+
+			off += used;
+			if (off >= len)
+				break;
+		}
+		size_t win = len - off < 64 ? len - off : 64;
+
+		if (tal_ws.multibyte)
+			tal_swc_mb(p + off, win, ltmp, lst);
+		else
+			tal_swc_sb(p + off, win, ltmp, lst);
+		off += win;
+	}
+}
 
 static u8_fn pick_u8_kernel(bool debug)
 {
@@ -281,27 +341,38 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 	static bool ws_ready;
 	static lwc_fn kern;
 	static u8_fn u8kern;
-	struct wstate st, cst;
-	struct counts ctmp;
+	static lscan_fn lkern;
+	static nl_fn nlk;
+	struct wstate st, cst, lst;
+	struct counts ctmp, ltmp;
 
 	if (!ws_ready) {
 		ws_init(&tal_ws);
 		kern = pick_lwc_kernel(o->debug);
 		if (MB_CUR_MAX > 1 && o->chars)
 			u8kern = pick_u8_kernel(o->debug);
+		if (o->linelength)
+			lkern = pick_lscan_kernel(o->debug);
+		nlk = pick_nl_kernel(false);
 		ws_ready = true;
 	}
 	wstate_init(&st);
 	wstate_init(&cst);
+	wstate_init(&lst);
 	memset(&ctmp, 0, sizeof ctmp);
+	memset(&ltmp, 0, sizeof ltmp);
 	st.width = o->linelength;
+	lst.width = true;
 
-	bool words_pass = o->words && kern && !o->linelength;
-	bool chars_pass = count_chars && u8kern && !o->linelength;
-	/* Everything the kernels can't cover runs through the oracle alone. */
-	bool scalar_mode = o->linelength || !kern ||
-			   (count_chars && !u8kern) ||
-			   (o->words && !words_pass);
+	bool words_pass = o->words && kern;
+	bool chars_pass = count_chars && u8kern;
+	bool l_pass = o->linelength && lkern;
+	/* Anything a kernel can't cover sends the whole job to the oracle. */
+	bool scalar_mode = (o->words && !words_pass) ||
+			   (count_chars && !chars_pass) ||
+			   (o->linelength && !l_pass);
+	/* Who counts lines: words kernel > chars kernel > a dedicated pass. */
+	bool nl_pass = !scalar_mode && o->lines && !words_pass && !chars_pass;
 
 	for (;;) {
 		ssize_t got = tal_read(fd, buf, TAL_IO_BUFSIZE);
@@ -325,15 +396,10 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 			words_chunk(kern, buf, len, c, &st);
 		if (chars_pass)
 			chars_chunk(u8kern, buf, len, &ctmp, &cst);
-		if (!words_pass && !chars_pass) {
-			/* lines-only fell through here? shouldn't happen —
-			 * count_lines owns that path — but stay correct. */
-			struct lwc_out out;
-
-			(void)kern(buf, len, !st.in_word, &out);
-			c->lines += out.lines;
-			st.in_word = !out.last_is_ws;
-		}
+		if (l_pass)
+			lscan_chunk(lkern, buf, len, &ltmp, &lst);
+		if (nl_pass)
+			c->lines += nlk(buf, len);
 	}
 	if (scalar_mode) {
 		tal_swc_finish(c, &st);
@@ -345,6 +411,11 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 			c->chars += ctmp.chars;
 			if (!words_pass)
 				c->lines += ctmp.lines;
+		}
+		if (l_pass) {
+			tal_swc_finish(&ltmp, &lst);
+			if (ltmp.linelength > c->linelength)
+				c->linelength = ltmp.linelength;
 		}
 	}
 	return 0;

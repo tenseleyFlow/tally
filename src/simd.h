@@ -51,4 +51,16 @@ size_t tal_u8count_avx2(const unsigned char *p, size_t n,
 size_t tal_u8count_neon(const unsigned char *p, size_t n,
 			unsigned long long *chars, unsigned long long *lines);
 
+/* -L fast scanner: printable-ASCII spans are width-1-per-byte with newline
+ * flush/reset; stops at the first "special" byte (anything < 0x20 except
+ * '\n', 0x7F, >= 0x80 — tabs, CR/FF/VT, multibyte) and returns bytes
+ * consumed so the caller runs a small oracle window (which owns the full
+ * width semantics). Updates *linepos (running) and *maxlen. */
+size_t tal_lscan_sse2(const unsigned char *p, size_t n,
+		      unsigned long long *linepos, unsigned long long *maxlen);
+size_t tal_lscan_avx2(const unsigned char *p, size_t n,
+		      unsigned long long *linepos, unsigned long long *maxlen);
+size_t tal_lscan_neon(const unsigned char *p, size_t n,
+		      unsigned long long *linepos, unsigned long long *maxlen);
+
 #endif /* TAL_SIMD_H */

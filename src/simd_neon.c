@@ -343,6 +343,55 @@ size_t tal_u8count_neon(const unsigned char *p, size_t n,
 	return consumed;
 }
 
+size_t tal_lscan_neon(const unsigned char *p, size_t n,
+		      unsigned long long *linepos, unsigned long long *maxlen)
+{
+	const uint8x16_t nlv = vdupq_n_u8('\n');
+	unsigned long long lp = *linepos, ml = *maxlen;
+	size_t consumed = 0;
+
+	while (n - consumed >= 16) {
+		uint8x16_t v = vld1q_u8(p + consumed);
+		uint8x16_t isnl = vceqq_u8(v, nlv);
+		uint8x16_t plain = nrange(v, 0x20, 0x7E);
+
+		if (vminvq_u8(vorrq_u8(plain, isnl)) == 0)
+			break; /* some byte is neither plain nor newline */
+
+		if (vmaxvq_u8(isnl) == 0) {
+			lp += 16;
+		} else {
+			for (unsigned j = 0; j < 16; j++) {
+				if (p[consumed + j] == '\n') {
+					if (lp > ml)
+						ml = lp;
+					lp = 0;
+				} else {
+					lp++;
+				}
+			}
+		}
+		consumed += 16;
+	}
+	while (consumed < n) {
+		unsigned char b = p[consumed];
+
+		if (b == '\n') {
+			if (lp > ml)
+				ml = lp;
+			lp = 0;
+		} else if (b >= 0x20 && b <= 0x7E) {
+			lp++;
+		} else {
+			break;
+		}
+		consumed++;
+	}
+	*linepos = lp;
+	*maxlen = ml;
+	return consumed;
+}
+
 #else
 typedef int tal_simd_neon_unused; /* ISO C forbids an empty translation unit */
 #endif

@@ -236,6 +236,67 @@ size_t tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	return k;
 }
 
+size_t tal_lscan_sse2(const unsigned char *p, size_t n,
+		      unsigned long long *linepos, unsigned long long *maxlen)
+{
+	const __m128i nlv = _mm_set1_epi8('\n');
+	unsigned long long lp = *linepos, ml = *maxlen;
+	size_t consumed = 0;
+
+	while (n - consumed >= 16) {
+		__m128i v = _mm_loadu_si128(
+			(const __m128i *)(const void *)(p + consumed));
+		__m128i isnl = _mm_cmpeq_epi8(v, nlv);
+		/* printable ASCII 0x20-0x7E: (v - 0x20) unsigned <= 0x5E */
+		__m128i x = _mm_sub_epi8(v, _mm_set1_epi8(0x20));
+		__m128i plain = _mm_cmpeq_epi8(
+			_mm_min_epu8(x, _mm_set1_epi8(0x5E)), x);
+		unsigned special = 0xFFFFu & ~(unsigned)_mm_movemask_epi8(
+			_mm_or_si128(plain, isnl));
+
+		if (special)
+			break;
+
+		unsigned nlm = (unsigned)_mm_movemask_epi8(isnl);
+
+		if (!nlm) {
+			lp += 16;
+		} else {
+			unsigned prev = 0;
+
+			while (nlm) {
+				unsigned j = (unsigned)__builtin_ctz(nlm);
+
+				lp += j - prev;
+				if (lp > ml)
+					ml = lp;
+				lp = 0;
+				prev = j + 1;
+				nlm &= nlm - 1;
+			}
+			lp += 16 - prev;
+		}
+		consumed += 16;
+	}
+	while (consumed < n) {
+		unsigned char b = p[consumed];
+
+		if (b == '\n') {
+			if (lp > ml)
+				ml = lp;
+			lp = 0;
+		} else if (b >= 0x20 && b <= 0x7E) {
+			lp++;
+		} else {
+			break;
+		}
+		consumed++;
+	}
+	*linepos = lp;
+	*maxlen = ml;
+	return consumed;
+}
+
 #else
 typedef int tal_simd_sse2_unused; /* ISO C forbids an empty translation unit */
 #endif

@@ -97,6 +97,18 @@ bench_one default_long_lines auto - "$corpus/long-lines"
 bench_one w_big_ascii auto - -w "$corpus/big-ascii"
 bench_one w_big_utf8 auto - -w "$corpus/big-utf8"
 bench_one w_big_typography auto - -w "$corpus/big-typography"
+# -m: the validated char kernel (sprint 03). Binary is the adversarial floor
+# (every span rejects to the scalar oracle's inline decoder).
+bench_one m_big_utf8 auto - -m "$corpus/big-utf8"
+bench_one m_big_ascii auto - -m "$corpus/big-ascii"
+bench_one m_big_binary auto - -m "$corpus/big-binary"
+bench_one lm_big_utf8 auto - -lm "$corpus/big-utf8"
+# -L: printable-ASCII scanner; specials take oracle windows. utf8 -L is
+# ungated headroom (per-char wcwidth dominates there; audit 03 note).
+bench_one L_big_ascii auto - -L "$corpus/big-ascii"
+bench_one L_newline_dense auto - -L "$corpus/newline-dense"
+bench_one L_long_lines auto - -L "$corpus/long-lines"
+bench_one lwmcL_big_ascii auto - -lwmcL "$corpus/big-ascii"
 # The -l cells are read()-bound ties against GNU's SIMD (audit 03 risk 1): a
 # 1.00 margin on min still coin-flips on ~2% run-to-run jitter (observed both
 # directions on dorado). 0.97 tolerates the jitter; the 16%-slower kernel the
