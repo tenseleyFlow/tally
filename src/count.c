@@ -224,6 +224,7 @@ static void lscan_chunk(lscan_fn lk, const unsigned char *p, size_t len,
 			struct counts *ltmp, struct wstate *lst)
 {
 	size_t off = 0;
+	size_t win = 64;
 
 	while (off < len) {
 		if (lst->npend == 0) {
@@ -233,14 +234,20 @@ static void lscan_chunk(lscan_fn lk, const unsigned char *p, size_t len,
 			off += used;
 			if (off >= len)
 				break;
+			/* Scanner progress means ASCII text resumed: shrink
+			 * the window back. Zero progress (multibyte-dense
+			 * text) grows it — a fixed 64B window ping-pongs
+			 * scanner<->oracle per CJK char and lost 9% to the
+			 * ref on macOS. */
+			win = used ? 64 : (win < 8192 ? win * 2 : win);
 		}
-		size_t win = len - off < 64 ? len - off : 64;
+		size_t step = len - off < win ? len - off : win;
 
 		if (tal_ws.multibyte)
-			tal_swc_mb(p + off, win, ltmp, lst);
+			tal_swc_mb(p + off, step, ltmp, lst);
 		else
-			tal_swc_sb(p + off, win, ltmp, lst);
-		off += win;
+			tal_swc_sb(p + off, step, ltmp, lst);
+		off += step;
 	}
 }
 
