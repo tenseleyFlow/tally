@@ -16,6 +16,13 @@ void tal_set_program(const char *argv0);
 const char *tal_qs(void);
 const char *tal_qe(void);
 
+/* gnulib shell-escape quoting, the subset wc can emit (rules probed from the
+ * ref, verified by the golden name fuzzer). quotef: quote only when needed
+ * (diagnostics; also the stdout filename when it contains '\n'). quoteaf:
+ * always quoted. Returns a static buffer — one live use per message. */
+const char *tal_quotef(const char *name);
+const char *tal_quoteaf(const char *name);
+
 /* Render V in decimal into BUF (size TAL_U64_BUFSIZE); returns a pointer to the
  * first digit (renders right-aligned, glibc umaxtostr-style). snprintf-free:
  * write_counts sits on the hot path for many-file runs. */

@@ -60,6 +60,32 @@ printf 'wide \344\270\255\346\226\207 z\342\200\213w\nx\rlonger-tail\fmid\013end
 # Filename shapes.
 cp "$dir/noeol.txt" "$dir/sp ace.txt"
 
+# Hostile-name battery (sprint 05): every quoting form the ref can emit —
+# bare, '...', "...", '\'' splices, $'...' escapes, invalid bytes, leading
+# shell-specials. check_quoting runs each existing AND a missing variant.
+mkdir -p "$dir/weird"
+wn() { printf 'a b\n' > "$dir/weird/$1"; }
+wn 'plain'
+wn 'sp ace'
+wn "qu'ote"
+wn 'dq"uote'
+wn "mix'\$dlr"
+wn 'nl
+name'
+wn 'tab	name'
+wn "$(printf 'ctl\001x')"
+wn "$(printf 'bell\a\a2')"
+wn "$(printf 'sq\047\nmix')"
+wn 'ast*erisk'
+wn 'br[acket'
+wn 'co:lon'
+wn '#lead'
+wn '~lead'
+wn 'ha#sh'
+wn 'utf8-é中'
+wn "$(printf 'bad\377byte')"
+wn 'x=y'
+
 # NUL-separated name lists (absolute paths: cases run from the repo root).
 printf '%s\0%s\0' "$dir/ascii.txt" "$dir/utf8.txt" > "$dir/files0.list"
 printf '%s\0-\0%s\0' "$dir/onebyte" "$dir/nl" > "$dir/dash.list"

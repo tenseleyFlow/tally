@@ -56,7 +56,7 @@ static bool count_one(const char *file, const struct options *o,
 	} else {
 		fd = open(file, O_RDONLY);
 		if (fd < 0) {
-			tal_error(errno, "%s", file);
+			tal_error(errno, "%s", tal_quotef(file));
 			memset(out, 0, sizeof *out);
 			return false;
 		}
@@ -68,11 +68,11 @@ static bool count_one(const char *file, const struct options *o,
 		write_counts(&c, o, width, file);
 
 	if (err) {
-		tal_error(err, "%s", diag);
+		tal_error(err, "%s", tal_quotef(diag));
 		ok = false;
 	}
 	if (fd != STDIN_FILENO && close(fd) != 0) {
-		tal_error(errno, "%s", file);
+		tal_error(errno, "%s", tal_quotef(file));
 		ok = false;
 	}
 	*out = c;
@@ -104,10 +104,13 @@ static struct fstatus *input_fstatus(const struct options *o, size_t nfiles,
 	return fst;
 }
 
-static void add_sat(unsigned long long *a, unsigned long long b)
+static bool add_sat(unsigned long long *a, unsigned long long b)
 {
-	if (__builtin_add_overflow(*a, b, a))
-		*a = ULLONG_MAX; /* saturate; EOVERFLOW diagnostics: sprint 05 */
+	if (__builtin_add_overflow(*a, b, a)) {
+		*a = ULLONG_MAX;
+		return true;
+	}
+	return false;
 }
 
 struct run {
@@ -115,6 +118,7 @@ struct run {
 	struct fstatus *fst;
 	int width;
 	struct counts tot;
+	bool ovf[4]; /* lines, words, chars, bytes total overflow */
 	size_t processed;
 	bool ok;
 	bool files_from_stdin; /* --files0-from=- */
@@ -130,14 +134,14 @@ static void run_name(struct run *r, char *name, size_t idx)
 		/* printf - | wc --files0-from=-  (wc.c:942-950) */
 		tal_error(0,
 			  "when reading file names from standard input, "
-			  "no file name of '%s' allowed", name);
+			  "no file name of %s allowed", tal_quoteaf(name));
 		r->ok = false;
 		return;
 	}
 	if (name && !name[0]) {
 		if (r->o->files_from)
 			tal_error(0, "%s:%zu: invalid zero-length file name",
-				  r->o->files_from, r->processed);
+				  tal_quotef(r->o->files_from), r->processed);
 		else
 			tal_error(0, "invalid zero-length file name");
 		r->ok = false;
@@ -148,10 +152,10 @@ static void run_name(struct run *r, char *name, size_t idx)
 
 	if (!count_one(name, r->o, &r->fst[idx], r->width, &c))
 		r->ok = false;
-	add_sat(&r->tot.lines, c.lines);
-	add_sat(&r->tot.words, c.words);
-	add_sat(&r->tot.chars, c.chars);
-	add_sat(&r->tot.bytes, c.bytes);
+	r->ovf[0] |= add_sat(&r->tot.lines, c.lines);
+	r->ovf[1] |= add_sat(&r->tot.words, c.words);
+	r->ovf[2] |= add_sat(&r->tot.chars, c.chars);
+	r->ovf[3] |= add_sat(&r->tot.bytes, c.bytes);
 	if (c.linelength > r->tot.linelength)
 		r->tot.linelength = c.linelength; /* -L total is the max */
 }
@@ -165,7 +169,7 @@ static char **slurp_list(FILE *f, const char *name, size_t size,
 	size_t got = fread(data, 1, size, f);
 
 	if (ferror(f))
-		tal_die(1, 0, "cannot read file names from '%s'", name);
+		tal_die(1, 0, "cannot read file names from %s", tal_quoteaf(name));
 	data[got] = '\0';
 
 	size_t n = 0;
@@ -213,7 +217,7 @@ int main(int argc, char **argv)
 	if (o.files_from) {
 		if (o.nfiles) {
 			/* wc.c:876-884; second line has no program prefix. */
-			tal_error(0, "extra operand '%s'", o.files[0]);
+			tal_error(0, "extra operand %s", tal_quoteaf(o.files[0]));
 			fprintf(stderr, "file operands cannot be combined "
 					"with --files0-from\n");
 			fprintf(stderr,
@@ -227,8 +231,8 @@ int main(int argc, char **argv)
 			fstream = fopen(o.files_from, "r");
 			if (!fstream)
 				tal_die(1, errno,
-					"cannot open '%s' for reading",
-					o.files_from);
+					"cannot open %s for reading",
+					tal_quoteaf(o.files_from));
 		}
 
 		/* Slurp when the list is a reasonably sized regular file so
@@ -296,7 +300,7 @@ int main(int argc, char **argv)
 		}
 		free(tok);
 		if (ferror(fstream)) {
-			tal_error(errno, "%s: read error", o.files_from);
+			tal_error(errno, "%s: read error", tal_quotef(o.files_from));
 			r.ok = false;
 		}
 		if (fstream != stdin)
@@ -308,6 +312,18 @@ int main(int argc, char **argv)
 
 	if (o.total != TOTAL_NEVER &&
 	    (o.total != TOTAL_AUTO || r.processed > 1)) {
+		/* Saturated totals are diagnosed like GNU (wc.c:1008-1031);
+		 * unreachable without 2^64 input bytes, ported for fidelity. */
+		static const char *const ovfname[] = {
+			"total lines", "total words",
+			"total characters", "total bytes"
+		};
+		for (int i = 0; i < 4; i++)
+			if (r.ovf[i]) {
+				tal_error(EOVERFLOW, "%s", ovfname[i]);
+				r.ok = false;
+			}
+
 		struct counts t = r.tot;
 
 		write_counts(&t, &o, r.width,

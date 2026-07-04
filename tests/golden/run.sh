@@ -315,6 +315,85 @@ check_dribble() {
 	fi
 }
 
+# Hostile-name quoting (sprint 05): every weird/ fixture runs as an existing
+# file (stdout-row quoting) and as a missing name (diagnostic quoting),
+# normalized diff as usual. Names never pass through the CASES word-splitter.
+check_quoting() {
+	_a=$1; _b=$2; _label=$3
+	for f in "$corpus/weird"/*; do
+		for variant in "" "-missing"; do
+			n="$f$variant"
+			"$_a" -l "$n" >"$work/qa.out" 2>"$work/qa.err"; ra=$?
+			"$_b" -l "$n" >"$work/qb.out" 2>"$work/qb.err"; rb=$?
+			normprog <"$work/qa.err" >"$work/qa.errn"
+			normprog <"$work/qb.err" >"$work/qb.errn"
+			if ! cmp -s "$work/qa.out" "$work/qb.out" ||
+			   ! cmp -s "$work/qa.errn" "$work/qb.errn" ||
+			   [ "$ra" != "$rb" ]; then
+				echo "  DIFF [$_label/quoting$variant]: $(printf %s "$n" | od -A n -t x1 | tr -d ' \n')"
+				diff "$work/qa.out" "$work/qb.out" | head -4
+				diff "$work/qa.errn" "$work/qb.errn" | head -4
+				echo "quoting" >>"$work/fails"
+			fi
+		done
+	done
+}
+
+# SIGPIPE stays at the default disposition (audit 00 claim 16): a reader that
+# quits must kill the writer with signal 13 (shell rc 141). Enough operands
+# that the rows overflow the pipe buffer, so the writer must block.
+check_sigpipe() {
+	_bin=$1; _label=$2
+	set --
+	i=0
+	while [ $i -lt 200 ]; do
+		set -- "$@" "$corpus/ascii.txt" "$corpus/utf8.txt" \
+			"$corpus/lines.txt" "$corpus/e2.txt" \
+			"$corpus/binary.bin" "$corpus/mbws.txt" \
+			"$corpus/nbsp.txt" "$corpus/crlf.txt" \
+			"$corpus/tabs.txt" "$corpus/wide.txt"
+		i=$((i + 1))
+	done
+	{ "$_bin" -l "$@" 2>/dev/null; echo $? >"$work/sig.rc"; } |
+		head -n 1 >/dev/null
+	rc=$(cat "$work/sig.rc")
+	if [ "$rc" != 141 ]; then
+		echo "  DIFF [$_label/sigpipe]: rc=$rc (want 141)"
+		echo "sigpipe" >>"$work/fails"
+	fi
+}
+
+# Write errors must reach stderr and flip the exit to 1, even when they only
+# surface at flush time. Linux legs have /dev/full; elsewhere skip.
+check_writeerr() {
+	_bin=$1; _label=$2
+	[ -w /dev/full ] || return 0
+	"$_bin" -l "$corpus/ascii.txt" >/dev/full 2>"$work/we.err"; rc=$?
+	if [ "$rc" != 1 ] || ! grep -q "write error" "$work/we.err"; then
+		echo "  DIFF [$_label/writeerr]: rc=$rc err=$(cat "$work/we.err")"
+		echo "writeerr" >>"$work/fails"
+	fi
+}
+
+# Line-buffered stdout: concurrent writers into one pipe may interleave rows
+# but never tear them (wc.c:810-812). Property test on the UUT alone.
+check_interleave() {
+	_bin=$1; _label=$2
+	{
+		"$_bin" -l "$corpus/ascii.txt" "$corpus/utf8.txt" \
+			"$corpus/lines.txt" "$corpus/e2.txt" &
+		"$_bin" -l "$corpus/ascii.txt" "$corpus/utf8.txt" \
+			"$corpus/lines.txt" "$corpus/e2.txt" &
+		wait
+	} >"$work/il.out" 2>/dev/null
+	n=$(wc -l <"$work/il.out" | tr -d ' ')
+	bad=$(grep -cv '^ *[0-9][0-9]* .*\(txt\|bin\|total\)$' "$work/il.out")
+	if [ "$n" != 10 ] || [ "$bad" != 0 ]; then
+		echo "  DIFF [$_label/interleave]: lines=$n torn=$bad"
+		echo "interleave" >>"$work/fails"
+	fi
+}
+
 # Available locales: C plus a UTF-8 one if the box has it.
 utf8=""
 for L in C.UTF-8 en_US.UTF-8 en_US.utf8; do
@@ -339,6 +418,8 @@ for L in $locales; do
 done
 check_positioned "$ref" "$ref" self
 check_dribble "$ref" self
+check_quoting "$ref" "$ref" self
+check_sigpipe "$ref" self
 if [ -s "$work/fails" ]; then
 	echo "GOLDEN: self-test FAILED — harness or corpus is non-deterministic"
 	exit 1
@@ -354,6 +435,12 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 	done
 	check_positioned "$UUT" "$ref" parity
 	check_dribble "$UUT" parity
+	if [ "$active" -ge 5 ]; then
+		check_quoting "$UUT" "$ref" parity
+		check_sigpipe "$UUT" parity
+		check_writeerr "$UUT" parity
+		check_interleave "$UUT" parity
+	fi
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')
 		echo "GOLDEN: parity FAILED ($n diffs vs wc $REFTAG)"

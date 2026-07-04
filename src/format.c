@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 #include "format.h"
 #include "util.h"
@@ -60,6 +61,8 @@ void write_counts(const struct counts *c, const struct options *o, int width,
 	if (o->linelength)
 		printf(fmt, width, tal_u64tostr(c->linelength, nbuf));
 	if (file)
-		printf(" %s", file);
+		/* One row per file even for hostile names: quote only when
+		 * the name embeds a newline (wc.c:296, coreutils 8.25). */
+		printf(" %s", strchr(file, '\n') ? tal_quotef(file) : file);
 	putchar('\n');
 }
