@@ -14,8 +14,11 @@ rc=0
 for host in $HOSTS; do
 	echo "== preflight: $host =="
 	ssh "$USER@$host" sh <<EOF || { rc=1; continue; }
-rm -rf "\$HOME/$REMOTE_DIR" && mkdir -p "\$HOME/$REMOTE_DIR"
+mkdir -p "\$HOME/$REMOTE_DIR"
 EOF
+	# --delete prunes stale tracked files; excluded dirs survive, so the built
+	# ref oracle in tests/.work is a persistent per-box cache (build-ref's
+	# version guard invalidates it when the pin moves).
 	rsync -az --delete \
 		--exclude '.git' --exclude '.docs' --exclude 'CLAUDE.md' \
 		--exclude 'tests/.work' --exclude 'bench/.work' \
