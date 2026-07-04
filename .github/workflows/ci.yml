@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    paths-ignore: ['**.md', 'doc/**', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'doc/**', 'LICENSE']
+  workflow_dispatch:
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: cc --version | head -2; make --version | head -1
+      - name: deps (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y hyperfine
+      - name: deps (macos)
+        if: runner.os == 'macOS'
+        run: brew install hyperfine || true
+      # The ref oracle (coreutils wc 9.11) takes minutes to configure+build;
+      # cache the built binary. build-ref.sh's version guard invalidates a
+      # stale or wrong cache entry by refusing the binary.
+      - name: cache ref wc
+        uses: actions/cache@v4
+        with:
+          path: tests/.work/ref
+          key: refwc-9.11-${{ runner.os }}-${{ runner.arch }}
+      - name: configure + build
+        run: ./configure && make CFLAGS="-O2 -Werror"
+      - name: test
+        run: make test
+      - name: sanitizer build
+        run: make debug
+      - name: bench
+        # Shared runners jitter the mean; gate on best-of-N min with a 3% band
+        # (audit 03 gate policy). Inactive until PARITY_ACTIVE either way.
+        run: TAL_PERF_METRIC=min TAL_PERF_MARGIN=0.97 TAL_BENCH_BYTES=50000000 make bench
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cache ref wc
+        uses: actions/cache@v4
+        with:
+          path: tests/.work/ref
+          key: refwc-9.11-freebsd-vm
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          prepare: pkg install -y gmake hyperfine curl || true
+          run: |
+            ./configure
+            gmake CFLAGS="-O2 -Werror"
+            gmake test
+            TAL_PERF_METRIC=min TAL_PERF_MARGIN=0.95 TAL_BENCH_BYTES=20000000 gmake bench || true  # VM timing too noisy to gate
+
+  musl:
+    runs-on: ubuntu-latest
+    container: alpine:3.20
+    env:
+      TAL_TEST_SANITIZE: "0"   # ASan needs glibc tooling; sanitizers run on the native legs
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: apk add --no-cache build-base make gcc musl-dev xz curl perl linux-headers
+      - name: cache ref wc
+        uses: actions/cache@v4
+        with:
+          path: tests/.work/ref
+          key: refwc-9.11-alpine-musl
+      - name: configure + build
+        run: ./configure && make CFLAGS="-O2 -Werror"
+      - name: test
+        run: make test
