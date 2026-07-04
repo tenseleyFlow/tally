@@ -181,25 +181,127 @@ static lwc_fn pick_lwc_kernel(bool debug)
 	return fn;
 }
 
-/* The general path: words, and/or chars (multibyte), and/or -L. The fused
- * kernel runs when only lines+words are needed; char counting (until the
- * validated -m kernel lands) and display width take the scalar oracle. */
+typedef size_t (*u8_fn)(const unsigned char *, size_t, unsigned long long *,
+			unsigned long long *);
+
+static u8_fn pick_u8_kernel(bool debug)
+{
+	u8_fn fn = NULL;
+	const char *name = "scalar";
+
+	if (tal_ws.utf8) {
+#if TAL_HAS_NEON && defined(__ARM_NEON)
+		fn = tal_u8count_neon;
+		name = "neon";
+#endif
+#if TAL_HAS_AVX2
+		if (tal_cpu_has_avx2()) {
+			fn = tal_u8count_avx2;
+			name = "avx2";
+		}
+#endif
+	}
+	if (debug)
+		fprintf(stderr, "%s: using %s char kernel\n", tal_prog, name);
+	return fn;
+}
+
+/* One chunk of the words path: fused kernel with scalar pend/hold windows. */
+static void words_chunk(lwc_fn kern, const unsigned char *p, size_t len,
+			struct counts *c, struct wstate *st)
+{
+	size_t off = 0;
+
+	while (off < len) {
+		if (st->npend) {
+			/* Resolve carried decode bytes on a short scalar
+			 * prefix, then resume the kernel. */
+			size_t pre = len - off < 16 ? len - off : 16;
+
+			tal_swc_mb(p + off, pre, c, st);
+			off += pre;
+			continue;
+		}
+		struct lwc_out out;
+		size_t used = kern(p + off, len - off, !st->in_word, &out);
+
+		c->lines += out.lines;
+		c->words += out.words;
+		st->in_word = !out.last_is_ws;
+		off += used;
+		if (off < len) {
+			/* Held tail: feed a couple of bytes to the oracle —
+			 * it pends an incomplete sequence for the next chunk
+			 * or EOF finish. Always advances, so adversarial
+			 * all-suspect input degrades to scalar, never loops. */
+			size_t hold = len - off < 2 ? len - off : 2;
+
+			tal_swc_mb(p + off, hold, c, st);
+			off += hold;
+		}
+	}
+}
+
+/* One chunk of the -m path: validated char kernel; rejected or held spans
+ * take the scalar oracle (GNU's byte-at-a-time error resync), whose word
+ * counts land in the throwaway *tmp. */
+static void chars_chunk(u8_fn u8k, const unsigned char *p, size_t len,
+			struct counts *tmp, struct wstate *cst)
+{
+	size_t off = 0;
+
+	while (off < len) {
+		if (cst->npend) {
+			size_t pre = len - off < 16 ? len - off : 16;
+
+			tal_swc_mb(p + off, pre, tmp, cst);
+			off += pre;
+			continue;
+		}
+		size_t used = u8k(p + off, len - off, &tmp->chars,
+				  &tmp->lines);
+
+		off += used;
+		if (off < len) {
+			size_t step = len - off < 4096 ? len - off : 4096;
+
+			tal_swc_mb(p + off, step, tmp, cst);
+			off += step;
+		}
+	}
+}
+
+/* The general path: words, and/or chars (multibyte), and/or -L. Fused
+ * lines+words kernel plus (when -m) the validated char kernel as a second
+ * pass over the hot chunk; -L and non-UTF-8 charsets take the scalar oracle,
+ * which computes everything in one walk. */
 static int count_general(int fd, const struct options *o, struct counts *c,
 			 bool count_chars)
 {
 	static bool ws_ready;
 	static lwc_fn kern;
-	struct wstate st;
+	static u8_fn u8kern;
+	struct wstate st, cst;
+	struct counts ctmp;
 
 	if (!ws_ready) {
 		ws_init(&tal_ws);
 		kern = pick_lwc_kernel(o->debug);
+		if (MB_CUR_MAX > 1 && o->chars)
+			u8kern = pick_u8_kernel(o->debug);
 		ws_ready = true;
 	}
 	wstate_init(&st);
+	wstate_init(&cst);
+	memset(&ctmp, 0, sizeof ctmp);
 	st.width = o->linelength;
 
-	bool use_kern = kern && !o->linelength && !count_chars;
+	bool words_pass = o->words && kern && !o->linelength;
+	bool chars_pass = count_chars && u8kern && !o->linelength;
+	/* Everything the kernels can't cover runs through the oracle alone. */
+	bool scalar_mode = o->linelength || !kern ||
+			   (count_chars && !u8kern) ||
+			   (o->words && !words_pass);
 
 	for (;;) {
 		ssize_t got = tal_read(fd, buf, TAL_IO_BUFSIZE);
@@ -212,48 +314,39 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 
 		size_t len = (size_t)got;
 
-		if (!use_kern) {
+		if (scalar_mode) {
 			if (tal_ws.multibyte)
 				tal_swc_mb(buf, len, c, &st);
 			else
 				tal_swc_sb(buf, len, c, &st);
 			continue;
 		}
-
-		size_t off = 0;
-
-		while (off < len) {
-			if (st.npend) {
-				/* Resolve carried decode bytes on a short
-				 * scalar prefix, then resume the kernel. */
-				size_t pre = len - off < 16 ? len - off : 16;
-
-				tal_swc_mb(buf + off, pre, c, &st);
-				off += pre;
-				continue;
-			}
+		if (words_pass)
+			words_chunk(kern, buf, len, c, &st);
+		if (chars_pass)
+			chars_chunk(u8kern, buf, len, &ctmp, &cst);
+		if (!words_pass && !chars_pass) {
+			/* lines-only fell through here? shouldn't happen —
+			 * count_lines owns that path — but stay correct. */
 			struct lwc_out out;
-			size_t used = kern(buf + off, len - off, !st.in_word,
-					   &out);
 
+			(void)kern(buf, len, !st.in_word, &out);
 			c->lines += out.lines;
-			c->words += out.words;
 			st.in_word = !out.last_is_ws;
-			off += used;
-			if (off < len) {
-				/* Held tail: feed a couple of bytes to the
-				 * oracle — it pends an incomplete sequence
-				 * for the next chunk or EOF finish. Always
-				 * advances, so adversarial all-suspect input
-				 * degrades to scalar speed, never loops. */
-				size_t hold = len - off < 2 ? len - off : 2;
-
-				tal_swc_mb(buf + off, hold, c, &st);
-				off += hold;
-			}
 		}
 	}
-	tal_swc_finish(c, &st);
+	if (scalar_mode) {
+		tal_swc_finish(c, &st);
+	} else {
+		if (words_pass)
+			tal_swc_finish(c, &st);
+		if (chars_pass) {
+			tal_swc_finish(&ctmp, &cst);
+			c->chars += ctmp.chars;
+			if (!words_pass)
+				c->lines += ctmp.lines;
+		}
+	}
 	return 0;
 }
 

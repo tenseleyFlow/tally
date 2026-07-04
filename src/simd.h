@@ -36,4 +36,19 @@ size_t tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 size_t tal_lwc_neon(const unsigned char *p, size_t n, unsigned prev_is_ws,
 		    struct lwc_out *out);
 
+/* Validated UTF-8 char counting for -m (audit 02 §-m): chars = positions
+ * where a valid character starts; any invalid sequence disqualifies its
+ * span. Kernels process seq-complete spans of <=8 KiB (a trailing
+ * incomplete sequence is held back), commit chars+newlines per clean span,
+ * and stop before a span containing an invalid sequence. Returns bytes
+ * consumed; the caller walks the rejected/held remainder with the scalar
+ * oracle (GNU's one-byte-at-a-time error resync). Strict walker shared by
+ * kernel tails and the no-SIMD tier: returns 0 ok / -1 invalid. */
+int tal_u8walk(const unsigned char *p, size_t n, unsigned long long *chars,
+	       unsigned long long *lines);
+size_t tal_u8count_avx2(const unsigned char *p, size_t n,
+			unsigned long long *chars, unsigned long long *lines);
+size_t tal_u8count_neon(const unsigned char *p, size_t n,
+			unsigned long long *chars, unsigned long long *lines);
+
 #endif /* TAL_SIMD_H */

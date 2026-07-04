@@ -221,6 +221,128 @@ size_t tal_lwc_neon(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	return k;
 }
 
+/* Validated -m kernel; mirrors simd_avx2.c's structural validator (see the
+ * comment there): continuation mask must equal the shifted-lead expectation,
+ * C0/C1/F5-FF always invalid, four second-byte specials, seq-complete spans. */
+
+static inline uint8x16_t nrange(uint8x16_t v, unsigned char lo,
+				unsigned char hi)
+{
+	return vcleq_u8(vsubq_u8(v, vdupq_n_u8(lo)), vdupq_n_u8((unsigned char)(hi - lo)));
+}
+
+static size_t u8_seq_hold(const unsigned char *p, size_t k)
+{
+	if (k >= 1 && p[k - 1] >= 0xC2 && p[k - 1] <= 0xF4)
+		return k - 1;
+	if (k >= 2 && p[k - 2] >= 0xE0 && p[k - 2] <= 0xF4)
+		return k - 2;
+	if (k >= 3 && p[k - 3] >= 0xF0 && p[k - 3] <= 0xF4)
+		return k - 3;
+	return k;
+}
+
+size_t tal_u8count_neon(const unsigned char *p, size_t n,
+			unsigned long long *chars, unsigned long long *lines)
+{
+	const uint8x16_t nlv = vdupq_n_u8('\n');
+	const uint8x16_t zero = vdupq_n_u8(0);
+	size_t consumed = 0;
+
+	while (consumed < n) {
+		size_t span = n - consumed < 8192 ? n - consumed : 8192;
+
+		span = u8_seq_hold(p + consumed, span);
+		if (span == 0)
+			break;
+
+		const unsigned char *q = p + consumed;
+		size_t rem = span;
+		unsigned long long ch = 0, nl = 0;
+		uint8x16_t cacc = zero, lacc = zero, err = zero;
+		uint8x16_t pl234 = zero, pl34 = zero, pl4 = zero;
+		int iters = 0;
+		bool ok = true;
+
+		while (rem >= 17) {
+			uint8x16_t v = vld1q_u8(q);
+			uint8x16_t v1 = vld1q_u8(q + 1);
+			uint8x16_t cont = vceqq_u8(
+				vandq_u8(v, vdupq_n_u8(0xC0)),
+				vdupq_n_u8(0x80));
+			uint8x16_t l2 = nrange(v, 0xC2, 0xDF);
+			uint8x16_t l3 = nrange(v, 0xE0, 0xEF);
+			uint8x16_t l4 = nrange(v, 0xF0, 0xF4);
+			uint8x16_t bad = vorrq_u8(
+				nrange(v, 0xC0, 0xC1),
+				vcgtq_u8(v, vdupq_n_u8(0xF4)));
+			uint8x16_t sp = vandq_u8(
+				vceqq_u8(v, vdupq_n_u8(0xE0)),
+				vcleq_u8(v1, vdupq_n_u8(0x9F)));
+
+			sp = vorrq_u8(sp, vandq_u8(
+				vceqq_u8(v, vdupq_n_u8(0xED)),
+				vcgtq_u8(v1, vdupq_n_u8(0x9F))));
+			sp = vorrq_u8(sp, vandq_u8(
+				vceqq_u8(v, vdupq_n_u8(0xF0)),
+				vcleq_u8(v1, vdupq_n_u8(0x8F))));
+			sp = vorrq_u8(sp, vandq_u8(
+				vceqq_u8(v, vdupq_n_u8(0xF4)),
+				vcgtq_u8(v1, vdupq_n_u8(0x8F))));
+
+			uint8x16_t l234 = vorrq_u8(l2, vorrq_u8(l3, l4));
+			uint8x16_t l34 = vorrq_u8(l3, l4);
+			uint8x16_t expect = vorrq_u8(
+				vextq_u8(pl234, l234, 15),
+				vorrq_u8(vextq_u8(pl34, l34, 14),
+					 vextq_u8(pl4, l4, 13)));
+
+			err = vorrq_u8(err, vorrq_u8(bad, sp));
+			err = vorrq_u8(err, veorq_u8(cont, expect));
+			cacc = vsubq_u8(cacc, cont);
+			lacc = vsubq_u8(lacc, vceqq_u8(v, nlv));
+			pl234 = l234;
+			pl34 = l34;
+			pl4 = l4;
+			ch += 16;
+			q += 16;
+			rem -= 16;
+			if (++iters == 255 || rem < 17) {
+				if (vmaxvq_u8(err)) {
+					ok = false;
+					break;
+				}
+				ch -= hsum(cacc);
+				nl += hsum(lacc);
+				cacc = lacc = zero;
+				iters = 0;
+			}
+		}
+		if (ok && rem) {
+			size_t back = 0;
+
+			while (back < 3 && q - back > p + consumed &&
+			       (*(q - back - 1) & 0xC0) == 0x80)
+				back++;
+			if (q - back > p + consumed && *(q - back - 1) >= 0xC2 &&
+			    *(q - back - 1) <= 0xF4) {
+				back++;
+				ch--;
+			} else {
+				back = 0;
+			}
+			if (tal_u8walk(q - back, rem + back, &ch, &nl) != 0)
+				ok = false;
+		}
+		if (!ok)
+			break;
+		*chars += ch;
+		*lines += nl;
+		consumed += span;
+	}
+	return consumed;
+}
+
 #else
 typedef int tal_simd_neon_unused; /* ISO C forbids an empty translation unit */
 #endif

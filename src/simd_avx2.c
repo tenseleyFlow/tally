@@ -308,6 +308,159 @@ size_t tal_lwc_avx2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	return k;
 }
 
+/* Validated -m kernel. Explicit structural validation (no lookup tables):
+ * the continuation mask must EQUAL the expectation mask built from shifted
+ * lead classes, C0/C1/F5-FF are always invalid, and four lead values carry
+ * second-byte range constraints (E0 overlong, ED surrogate, F0 overlong,
+ * F4 too-large). Spans end sequence-complete (holds), so expectation
+ * carries start at zero per span and a rejected span never contains a
+ * sequence begun in a committed one. */
+
+static inline __m256i range_le(__m256i v, unsigned char lim)
+{
+	/* v <= lim (unsigned) */
+	return _mm256_cmpeq_epi8(_mm256_min_epu8(v, _mm256_set1_epi8((char)lim)),
+				 v);
+}
+
+static inline __m256i range_in(__m256i v, unsigned char lo, unsigned char hi)
+{
+	/* lo <= v <= hi (unsigned): (v - lo) <= (hi - lo) */
+	__m256i x = _mm256_sub_epi8(v, _mm256_set1_epi8((char)lo));
+
+	return range_le(x, (unsigned char)(hi - lo));
+}
+
+/* Hold back a trailing incomplete sequence (<=3 bytes) so the span ends
+ * sequence-complete. */
+static size_t u8_seq_hold(const unsigned char *p, size_t k)
+{
+	if (k >= 1 && p[k - 1] >= 0xC2 && p[k - 1] <= 0xF4)
+		return k - 1;
+	if (k >= 2 && p[k - 2] >= 0xE0 && p[k - 2] <= 0xF4)
+		return k - 2;
+	if (k >= 3 && p[k - 3] >= 0xF0 && p[k - 3] <= 0xF4)
+		return k - 3;
+	return k;
+}
+
+size_t tal_u8count_avx2(const unsigned char *p, size_t n,
+			unsigned long long *chars, unsigned long long *lines)
+{
+	const __m256i zero = _mm256_setzero_si256();
+	const __m256i nlv = _mm256_set1_epi8('\n');
+	const __m256i contmask = _mm256_set1_epi8((char)0xC0);
+	const __m256i contbits = _mm256_set1_epi8((char)0x80);
+	const __m256i ones = _mm256_set1_epi8((char)0xFF);
+	size_t consumed = 0;
+
+	while (consumed < n) {
+		size_t span = n - consumed < 8192 ? n - consumed : 8192;
+
+		span = u8_seq_hold(p + consumed, span);
+		if (span == 0)
+			break;
+
+		const unsigned char *q = p + consumed;
+		size_t rem = span;
+		unsigned long long ch = 0, nl = 0;
+		__m256i cacc = zero, lacc = zero, err = zero;
+		__m256i pl234 = zero, pl34 = zero, pl4 = zero;
+		int iters = 0;
+		bool ok = true;
+
+		while (rem >= 33) {
+			__m256i v = _mm256_loadu_si256(
+				(const __m256i *)(const void *)q);
+			__m256i v1 = _mm256_loadu_si256(
+				(const __m256i *)(const void *)(q + 1));
+			__m256i cont = _mm256_cmpeq_epi8(
+				_mm256_and_si256(v, contmask), contbits);
+			__m256i l2 = range_in(v, 0xC2, 0xDF);
+			__m256i l3 = range_in(v, 0xE0, 0xEF);
+			__m256i l4 = range_in(v, 0xF0, 0xF4);
+			__m256i bad = _mm256_or_si256(
+				range_in(v, 0xC0, 0xC1),
+				_mm256_xor_si256(range_le(v, 0xF4), ones));
+			__m256i sp = _mm256_and_si256(
+				_mm256_cmpeq_epi8(v, _mm256_set1_epi8((char)0xE0)),
+				range_le(v1, 0x9F));
+
+			sp = _mm256_or_si256(sp, _mm256_and_si256(
+				_mm256_cmpeq_epi8(v, _mm256_set1_epi8((char)0xED)),
+				_mm256_xor_si256(range_le(v1, 0x9F), ones)));
+			sp = _mm256_or_si256(sp, _mm256_and_si256(
+				_mm256_cmpeq_epi8(v, _mm256_set1_epi8((char)0xF0)),
+				range_le(v1, 0x8F)));
+			sp = _mm256_or_si256(sp, _mm256_and_si256(
+				_mm256_cmpeq_epi8(v, _mm256_set1_epi8((char)0xF4)),
+				_mm256_xor_si256(range_le(v1, 0x8F), ones)));
+
+			__m256i l234 = _mm256_or_si256(l2,
+						       _mm256_or_si256(l3, l4));
+			__m256i l34 = _mm256_or_si256(l3, l4);
+			__m256i expect = _mm256_or_si256(
+				shift_in_prev(l234, pl234),
+				_mm256_or_si256(
+					shift_in_prev2(l34, pl34),
+					_mm256_alignr_epi8(
+						l4,
+						_mm256_permute2x128_si256(
+							pl4, l4, 0x21),
+						13)));
+
+			err = _mm256_or_si256(err, _mm256_or_si256(bad, sp));
+			err = _mm256_or_si256(err,
+					      _mm256_xor_si256(cont, expect));
+			cacc = _mm256_sub_epi8(cacc, cont);
+			lacc = _mm256_sub_epi8(lacc,
+					       _mm256_cmpeq_epi8(v, nlv));
+			pl234 = l234;
+			pl34 = l34;
+			pl4 = l4;
+			ch += 32;
+			q += 32;
+			rem -= 32;
+			if (++iters == 255 || rem < 33) {
+				if (!_mm256_testz_si256(err, err)) {
+					ok = false;
+					break;
+				}
+				ch -= hsum(cacc);
+				nl += hsum(lacc);
+				cacc = lacc = zero;
+				iters = 0;
+			}
+		}
+		if (ok && rem) {
+			/* A char begun in the vector region may extend into
+			 * the tail: back up to its lead (its expectation
+			 * bytes were never compared) and re-walk it whole,
+			 * deducting the lead's already-counted char. */
+			size_t back = 0;
+
+			while (back < 3 && q - back > p + consumed &&
+			       (*(q - back - 1) & 0xC0) == 0x80)
+				back++;
+			if (q - back > p + consumed && *(q - back - 1) >= 0xC2 &&
+			    *(q - back - 1) <= 0xF4) {
+				back++;
+				ch--;
+			} else {
+				back = 0;
+			}
+			if (tal_u8walk(q - back, rem + back, &ch, &nl) != 0)
+				ok = false;
+		}
+		if (!ok)
+			break;
+		*chars += ch;
+		*lines += nl;
+		consumed += span;
+	}
+	return consumed;
+}
+
 #else
 typedef int tal_simd_avx2_unused; /* ISO C forbids an empty translation unit */
 #endif

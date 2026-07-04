@@ -21,6 +21,86 @@ void wstate_init(struct wstate *st)
 	memset(st, 0, sizeof *st);
 }
 
+/* RFC 3629 decode at p[0] with n bytes visible: returns the sequence length
+ * (1-4) with *cp set, 0 for a valid-but-incomplete prefix (chunk boundary),
+ * -1 for invalid (overlongs, surrogates, > U+10FFFF, stray or missing
+ * continuations). glibc, FreeBSD and musl decoders agree with this exactly
+ * (fuzzed against the ref per box) — the single decode truth for the oracle
+ * and the strict walker. */
+static int u8dec(const unsigned char *p, size_t n, unsigned long *cp)
+{
+	unsigned char b = p[0];
+
+	if (b < 0x80) {
+		*cp = b;
+		return 1;
+	}
+
+	size_t need;
+	unsigned char lo = 0x80, hi = 0xBF;
+	unsigned long v;
+
+	if (b >= 0xC2 && b <= 0xDF) {
+		need = 1;
+		v = b & 0x1Fu;
+	} else if (b >= 0xE0 && b <= 0xEF) {
+		need = 2;
+		v = b & 0x0Fu;
+		if (b == 0xE0)
+			lo = 0xA0; /* overlong-3 */
+		else if (b == 0xED)
+			hi = 0x9F; /* surrogates */
+	} else if (b >= 0xF0 && b <= 0xF4) {
+		need = 3;
+		v = b & 0x07u;
+		if (b == 0xF0)
+			lo = 0x90; /* overlong-4 */
+		else if (b == 0xF4)
+			hi = 0x8F; /* > U+10FFFF */
+	} else {
+		return -1; /* stray continuation, C0/C1, F5-FF */
+	}
+	size_t have = n - 1 < need ? n - 1 : need;
+
+	if (have >= 1) {
+		if (p[1] < lo || p[1] > hi)
+			return -1;
+		v = (v << 6) | (p[1] & 0x3Fu);
+	}
+	for (size_t j = 2; j <= have; j++) {
+		if ((p[j] & 0xC0) != 0x80)
+			return -1;
+		v = (v << 6) | (p[j] & 0x3Fu);
+	}
+	if (have < need)
+		return 0; /* incomplete prefix */
+	*cp = v;
+	return (int)need + 1;
+}
+
+/* Strict UTF-8 walk: counts chars (at valid starts) and newlines; rejects on
+ * the first invalid OR truncated sequence. */
+int tal_u8walk(const unsigned char *p, size_t n, unsigned long long *chars,
+	       unsigned long long *lines)
+{
+	unsigned long long ch = 0, nl = 0;
+	size_t i = 0;
+
+	while (i < n) {
+		unsigned long cp;
+		int r = u8dec(p + i, n - i, &cp);
+
+		if (r <= 0)
+			return -1; /* invalid, or truncated at end */
+		nl += cp == '\n';
+		ch++;
+		i += (size_t)r;
+	}
+	*chars += ch;
+	*lines += nl;
+	return 0;
+}
+
 /* The wc.c per-character switch (audit 01 table), byte form. Width math runs
  * only when st->width (-L requested), matching GNU's c32width gating. */
 static void classify_byte(unsigned char b, struct counts *c,
@@ -144,6 +224,36 @@ void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 					classify_byte(p[i++], c, st, &in_word);
 				}
 			}
+			/* UTF-8 locales decode inline with u8dec — no libc
+			 * round-trip, no pend churn mid-buffer. Bytes that
+			 * can never start a character are one-byte errors at
+			 * byte-scan speed; a valid-but-incomplete prefix at
+			 * the chunk end goes to pend. */
+			if (tal_ws.utf8) {
+				while (i < n && p[i] >= 0x80) {
+					unsigned long cp;
+					int r = u8dec(p + i, n - i, &cp);
+
+					if (r > 0) {
+						c->chars++;
+						classify_wc(cp, c, st,
+							    &in_word);
+						i += (size_t)r;
+					} else if (r < 0) {
+						c->words += !in_word;
+						in_word = true;
+						i++;
+					} else {
+						/* incomplete at chunk end */
+						while (i < n)
+							st->pend[st->npend++] =
+								p[i++];
+						goto out;
+					}
+				}
+				if (i < n)
+					continue; /* back to the ASCII bulk */
+			}
 			if (i >= n)
 				break;
 		}
@@ -151,35 +261,65 @@ void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 			st->pend[st->npend++] = p[i++];
 
 		while (st->npend) {
-			mbstate_t ms;
-			wchar_t wc;
-			size_t r;
+			size_t k;
 
-			memset(&ms, 0, sizeof ms);
-			r = mbrtowc(&wc, (const char *)st->pend, st->npend,
-				    &ms);
-			if (r == (size_t)-2) {
-				if (i < n && st->npend < sizeof st->pend)
-					break; /* refill */
-				if (i >= n)
-					goto out; /* carry across chunks */
-				/* pend full yet incomplete: no real charset
-				 * needs >8 bytes — treat lead as an error. */
-				r = (size_t)-1;
-			}
-			if (r == (size_t)-1) {
-				/* Encoding error: one byte, non-space, word
-				 * constituent, NOT a char (wc.c:531-549). */
-				c->words += !in_word;
-				in_word = true;
-				st->npend--;
-				memmove(st->pend, st->pend + 1, st->npend);
-				continue;
-			}
-			size_t k = r ? r : 1; /* r==0: decoded NUL, 1 byte */
+			if (tal_ws.utf8) {
+				unsigned long cp;
+				int r = u8dec(st->pend, st->npend, &cp);
 
-			c->chars++;
-			classify_wc((unsigned long)wc, c, st, &in_word);
+				if (r == 0) {
+					if (i < n &&
+					    st->npend < sizeof st->pend)
+						break; /* refill */
+					if (i >= n)
+						goto out; /* carry */
+					r = -1; /* pend full: error */
+				}
+				if (r < 0) {
+					c->words += !in_word;
+					in_word = true;
+					st->npend--;
+					memmove(st->pend, st->pend + 1,
+						st->npend);
+					continue;
+				}
+				c->chars++;
+				classify_wc(cp, c, st, &in_word);
+				k = (size_t)r;
+			} else {
+				mbstate_t ms;
+				wchar_t wc;
+				size_t r;
+
+				memset(&ms, 0, sizeof ms);
+				r = mbrtowc(&wc, (const char *)st->pend,
+					    st->npend, &ms);
+				if (r == (size_t)-2) {
+					if (i < n &&
+					    st->npend < sizeof st->pend)
+						break; /* refill */
+					if (i >= n)
+						goto out; /* carry */
+					/* pend full yet incomplete: no real
+					 * charset needs >8 bytes — error. */
+					r = (size_t)-1;
+				}
+				if (r == (size_t)-1) {
+					/* Encoding error: one byte, non-space,
+					 * word constituent, NOT a char
+					 * (wc.c:531-549). */
+					c->words += !in_word;
+					in_word = true;
+					st->npend--;
+					memmove(st->pend, st->pend + 1,
+						st->npend);
+					continue;
+				}
+				c->chars++;
+				classify_wc((unsigned long)wc, c, st,
+					    &in_word);
+				k = r ? r : 1; /* r==0: NUL, 1 byte */
+			}
 			st->npend -= (unsigned)k;
 			memmove(st->pend, st->pend + k, st->npend);
 		}
