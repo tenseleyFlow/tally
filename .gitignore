@@ -1,0 +1,18 @@
+# planning + local guidance (kept local, like aspen/ferret)
+.docs/
+CLAUDE.md
+
+# build artifacts
+/tally
+*.o
+*.d
+config.mk
+config.h
+
+# release tarball (make dist)
+/tally-*.tar.gz
+
+# test/bench scratch
+/tests/.work/
+/bench/.work/
+*.core
