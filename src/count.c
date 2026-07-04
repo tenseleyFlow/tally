@@ -143,19 +143,55 @@ static int count_lines(int fd, const struct options *o, struct counts *c)
 	return 0;
 }
 
-/* Word counting (+ fused lines): scalar oracle path; the SIMD block driver
- * replaces the inner call per audit 02 (L0/L1/L2). */
+/* Word counting (+ fused lines), the audit-02 block driver.
+ * L0: the SIMD kernel treats every byte outside the derived separator set as
+ * a word constituent — exact for single-byte locales, and exact for UTF-8
+ * until a suspect byte (a multibyte-separator lead) appears.
+ * L2: a block containing a suspect (or starting with pending decode bytes)
+ * re-runs through the scalar oracle with carried state.
+ * Non-UTF-8 multibyte locales and pathological byte sets: scalar throughout. */
+
+typedef bool (*lwc_fn)(const unsigned char *, size_t, unsigned,
+		       struct lwc_out *, bool);
+
+#define WBLOCK 8192
+
+static lwc_fn pick_lwc_kernel(bool debug)
+{
+	lwc_fn fn = NULL;
+	const char *name = "scalar";
+
+	if (tal_ws.luts_ok && (!tal_ws.multibyte || tal_ws.utf8)) {
+#if TAL_HAS_SSE2 && defined(__SSE2__)
+		fn = tal_lwc_sse2;
+		name = "sse2";
+#elif TAL_HAS_NEON && defined(__ARM_NEON)
+		fn = tal_lwc_neon;
+		name = "neon";
+#endif
+#if TAL_HAS_AVX2
+		if (tal_cpu_has_avx2()) {
+			fn = tal_lwc_avx2;
+			name = "avx2";
+		}
+#endif
+	}
+	if (debug)
+		fprintf(stderr, "%s: using %s word kernel%s\n", tal_prog, name,
+			fn && tal_ws.multibyte ? " (suspect-gated)" : "");
+	return fn;
+}
+
 static int count_words(int fd, const struct options *o, struct counts *c)
 {
 	static bool ws_ready;
+	static lwc_fn kern;
 	struct wstate st;
 
 	if (!ws_ready) {
 		ws_init(&tal_ws);
+		kern = pick_lwc_kernel(o->debug);
 		ws_ready = true;
-		if (o->debug)
-			fprintf(stderr, "%s: using scalar word kernel\n",
-				tal_prog);
 	}
 	wstate_init(&st);
 
@@ -167,10 +203,41 @@ static int count_words(int fd, const struct options *o, struct counts *c)
 		if (got == 0)
 			break;
 		c->bytes += (unsigned long long)got;
-		if (tal_ws.multibyte)
-			tal_swc_mb(buf, (size_t)got, c, &st);
-		else
-			tal_swc_sb(buf, (size_t)got, c, &st);
+
+		size_t len = (size_t)got;
+
+		if (!kern) {
+			if (tal_ws.multibyte)
+				tal_swc_mb(buf, len, c, &st);
+			else
+				tal_swc_sb(buf, len, c, &st);
+			continue;
+		}
+		if (!tal_ws.multibyte) {
+			/* Single-byte locale: the byte set is the whole rule;
+			 * no suspects can exist. */
+			struct lwc_out out;
+
+			(void)kern(buf, len, !st.in_word, &out, false);
+			c->lines += out.lines;
+			c->words += out.words;
+			st.in_word = !out.last_is_ws;
+			continue;
+		}
+		/* UTF-8: per-block optimistic kernel with scalar re-run. */
+		for (size_t off = 0; off < len; off += WBLOCK) {
+			size_t blen = len - off < WBLOCK ? len - off : WBLOCK;
+			struct lwc_out out;
+
+			if (st.npend == 0 &&
+			    kern(buf + off, blen, !st.in_word, &out, true)) {
+				c->lines += out.lines;
+				c->words += out.words;
+				st.in_word = !out.last_is_ws;
+			} else {
+				tal_swc_mb(buf + off, blen, c, &st);
+			}
+		}
 	}
 	if (tal_ws.multibyte)
 		tal_swc_mb_finish(c, &st);
