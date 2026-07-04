@@ -133,12 +133,32 @@ CASES='
 03 %< invalid.txt -lwmcL
 04 %C/ascii.txt %C/utf8.txt
 04 %C/ascii.txt %C/utf8.txt %C/binary.bin
+04 %C/ascii.txt %C/ascii.txt
 04 %C/ascii.txt -l
+04 -l %C/lines.txt %C/empty %C/nl
+04 -lwmcL %C/utf8.txt %C/tabs.txt
+04 -c %C/ascii.txt %C/utf8.txt
 04 %C/nosuchfile %C/ascii.txt
+04 %C/ascii.txt %C/nosuchfile %C/utf8.txt
+04 -l %C %C/ascii.txt
+04 %E %C/ascii.txt
 04 --total=always %C/ascii.txt
+04 --total=always %C/nosuchfile
 04 --total=only %C/ascii.txt %C/utf8.txt
+04 --total=only -L %C/tabs.txt %C/wide.txt
 04 --total=never %C/ascii.txt %C/utf8.txt
+04 --total=al %C/ascii.txt %C/utf8.txt
 04 --files0-from=%C/files0.list
+04 --files0-from=%C/missing.list
+04 --files0-from=%C/zerolen.list
+04 --files0-from=%C/noterm.list
+04 --files0-from=%C/empty.list
+04 --files0-from=%C/empty.list --total=always
+04 %< onebyte --files0-from=%C/dash.list
+04 %< files0.list --files0-from=-
+04 %< dash.list --files0-from=-
+04 %< ascii.txt - %C/utf8.txt
+04 %< ascii.txt - -
 '
 
 # The tools report their program name as argv[0] (getopt lines: verbatim; error

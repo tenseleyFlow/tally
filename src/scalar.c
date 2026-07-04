@@ -172,7 +172,7 @@ static void classify_wc(unsigned long wc, struct counts *c, struct wstate *st,
 		return;
 	}
 	if (st->width) {
-		int w = wcwidth((wchar_t)wc);
+		int w = tal_wcwidth(wc);
 
 		if (w > 0)
 			st->linepos += (unsigned)w;

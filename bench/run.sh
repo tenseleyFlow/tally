@@ -103,12 +103,17 @@ bench_one m_big_utf8 auto - -m "$corpus/big-utf8"
 bench_one m_big_ascii auto - -m "$corpus/big-ascii"
 bench_one m_big_binary auto - -m "$corpus/big-binary"
 bench_one lm_big_utf8 auto - -lm "$corpus/big-utf8"
-# -L: printable-ASCII scanner; specials take oracle windows. utf8 -L is
-# ungated headroom (per-char wcwidth dominates there; audit 03 note).
+# -L: printable-ASCII scanner; specials take oracle windows. utf8 -L runs
+# scanner+windows with the cached BMP width table (1.70x; a raw wcwidth call
+# per char held it to 1.06x). Deeper vectorization remains headroom.
+bench_one L_big_utf8 auto - -L "$corpus/big-utf8"
 bench_one L_big_ascii auto - -L "$corpus/big-ascii"
 bench_one L_newline_dense auto - -L "$corpus/newline-dense"
 bench_one L_long_lines auto - -L "$corpus/long-lines"
 bench_one lwmcL_big_ascii auto - -lwmcL "$corpus/big-ascii"
+# tiny-many (sprint 04): 10k files through the multi-file loop — per-file
+# dispatch, estimator stats, and open/close costs dominate.
+bench_one tiny_many auto - --files0-from="$corpus/tiny.list"
 # The -l cells are read()-bound ties against GNU's SIMD (audit 03 risk 1): a
 # 1.00 margin on min still coin-flips on ~2% run-to-run jitter (observed both
 # directions on dorado). 0.97 tolerates the jitter; the 16%-slower kernel the

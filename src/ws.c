@@ -206,6 +206,26 @@ void ws_init(struct ws_spec *w)
 	}
 }
 
+int tal_wcwidth(unsigned long cp)
+{
+	/* Value stored as wcwidth+1 so 0 means "uncached impossible" and the
+	 * whole-table memset(0)+fill is race-free in our single thread. */
+	static unsigned char bmp[0x10000];
+	static bool ready;
+
+	if (cp > 0xFFFF)
+		return wcwidth((wchar_t)cp);
+	if (!ready) {
+		for (unsigned long c = 0; c < 0x10000; c++) {
+			int w = wcwidth((wchar_t)c);
+
+			bmp[c] = (unsigned char)(w < -1 ? 0 : w + 1);
+		}
+		ready = true;
+	}
+	return (int)bmp[cp] - 1;
+}
+
 int tal_mbws_match(const unsigned char *p, size_t n)
 {
 	if (n < 2)

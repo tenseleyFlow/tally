@@ -81,11 +81,21 @@ while [ "$i" -lt "$N" ]; do
 	esac
 	gseed=$(rnd 1000000)
 	"$GEN" "$class" "$gseed" "$size" > "$work/f"
+	# Multi-file mode from sprint 04 on: sometimes 2-3 operands (the
+	# second file from another class exercises totals + width).
+	fargs="$work/f"
+	if [ "$active" -ge 4 ] && [ "$(rnd 3)" = 0 ]; then
+		c2=$(( $(rnd 8) + 1 ))
+		class2=$(echo "$CLASSES" | cut -d' ' -f"$c2")
+		"$GEN" "$class2" "$(rnd 1000000)" "$(rnd 65536)" > "$work/f2"
+		fargs="$work/f $work/f2"
+		[ "$(rnd 2)" = 0 ] && fargs="$fargs $work/f"
+	fi
 
 	# shellcheck disable=SC2086
-	env $pc LC_ALL=$loc "$TALLY" $flags "$work/f" >"$work/a.out" 2>"$work/a.err"; ra=$?
+	env $pc LC_ALL=$loc "$TALLY" $flags $fargs >"$work/a.out" 2>"$work/a.err"; ra=$?
 	# shellcheck disable=SC2086
-	env $pc LC_ALL=$loc "$ref"   $flags "$work/f" >"$work/b.out" 2>"$work/b.err"; rb=$?
+	env $pc LC_ALL=$loc "$ref"   $flags $fargs >"$work/b.out" 2>"$work/b.err"; rb=$?
 	# Normalize: counts lines end in the (differing) file path's basename only
 	# when paths match — here both see the same path, so only program tokens
 	# on stderr need normalizing.

@@ -60,7 +60,12 @@ printf 'wide \344\270\255\346\226\207 z\342\200\213w\nx\rlonger-tail\fmid\013end
 # Filename shapes.
 cp "$dir/noeol.txt" "$dir/sp ace.txt"
 
-# NUL-separated name list (absolute paths: cases run from the repo root).
+# NUL-separated name lists (absolute paths: cases run from the repo root).
 printf '%s\0%s\0' "$dir/ascii.txt" "$dir/utf8.txt" > "$dir/files0.list"
+printf '%s\0-\0%s\0' "$dir/onebyte" "$dir/nl" > "$dir/dash.list"
+printf '%s\0\0%s\0' "$dir/onebyte" "$dir/nl" > "$dir/zerolen.list"
+printf '%s\0%s\0' "$dir/nosuchfile" "$dir/onebyte" > "$dir/missing.list"
+printf '%s' "$dir/onebyte" > "$dir/noterm.list" # final token without NUL
+: > "$dir/empty.list"
 
 echo "$dir"

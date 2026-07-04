@@ -28,11 +28,13 @@ mk binary   7 "$BIG" big-binary
 mk lines    7 "$BIG" newline-dense
 mk longline 7 "$BIG" long-lines
 
-# tiny-many: 10,000 x 1 KiB files (startup + per-file loop costs).
+# tiny-many: 10,000 x 1 KiB files (startup + per-file loop costs), plus a
+# NUL list so the gate can feed them without shell globbing (hyperfine -N).
 if [ ! -d "$root/tiny" ]; then
 	mkdir -p "$root/tiny"
 	"$GEN" ascii 9 10240000 > "$root/tiny/.all"
 	( cd "$root/tiny" && split -a 3 -b 1024 .all f && rm -f .all )
 fi
+[ -f "$root/tiny.list" ] || printf '%s\0' "$root"/tiny/f* > "$root/tiny.list"
 
 echo "$root"

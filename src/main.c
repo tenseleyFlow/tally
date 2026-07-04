@@ -1,10 +1,12 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <locale.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "count.h"
@@ -34,11 +36,14 @@ static void close_stdout(void)
 	}
 }
 
-/* Count one input. FILE is NULL for bare stdin, "-" for the stdin operand,
- * else a path. Mirrors wc()/wc_file() (wc.c:372-723): partial counts print
- * BEFORE a read-error diagnostic; open errors print no counts line. */
+/* Count one input. FILE is NULL for bare stdin, "-" for the stdin operand
+ * (also honored inside --files0-from lists, audit 00 claim 13), else a path.
+ * Mirrors wc()/wc_file() (wc.c:372-723): partial counts print BEFORE a
+ * read-error diagnostic; open errors print no counts line; --total=only
+ * suppresses the per-file row (wc.c:679). *out receives the counts for
+ * totals accumulation. */
 static bool count_one(const char *file, const struct options *o,
-		      struct fstatus *fst, int width)
+		      struct fstatus *fst, int width, struct counts *out)
 {
 	const char *diag = file ? file : "standard input";
 	struct counts c;
@@ -52,13 +57,15 @@ static bool count_one(const char *file, const struct options *o,
 		fd = open(file, O_RDONLY);
 		if (fd < 0) {
 			tal_error(errno, "%s", file);
+			memset(out, 0, sizeof *out);
 			return false;
 		}
 	}
 
 	int err = count_fd(fd, o, fst, &c);
 
-	write_counts(&c, o, width, file);
+	if (o->total != TOTAL_ONLY)
+		write_counts(&c, o, width, file);
 
 	if (err) {
 		tal_error(err, "%s", diag);
@@ -68,25 +75,119 @@ static bool count_one(const char *file, const struct options *o,
 		tal_error(errno, "%s", file);
 		ok = false;
 	}
+	*out = c;
 	return ok;
 }
 
-/* get_input_fstatus (wc.c:731-751): skip the stat entirely for the
- * single-input single-counter case (width 1); otherwise stat by path
- * (stdin via fstat) so the width estimator and -c fast path share it. */
-static void input_fstatus(const struct options *o, const char *file,
-			  struct fstatus *fst)
+/* get_input_fstatus (wc.c:731-751): skip the stat when it cannot matter —
+ * unknown name count (streamed lists) or a single input with a single
+ * counter (width 1 either way); otherwise stat by path (stdin via fstat) so
+ * the width estimator and the -c fast path share one stat. */
+static struct fstatus *input_fstatus(const struct options *o, size_t nfiles,
+				     char **files)
 {
+	struct fstatus *fst = xmalloc((nfiles ? nfiles : 1) * sizeof *fst);
 	int ncounters = (int)o->lines + (int)o->words + (int)o->chars +
 			(int)o->bytes + (int)o->linelength;
 
-	if (ncounters == 1) {
-		fst->failed = 1;
+	if (nfiles == 0 || (nfiles == 1 && ncounters == 1)) {
+		fst[0].failed = 1;
+		return fst;
+	}
+	for (size_t i = 0; i < nfiles; i++) {
+		const char *f = files ? files[i] : NULL;
+
+		fst[i].failed = (!f || strcmp(f, "-") == 0)
+					? fstat(STDIN_FILENO, &fst[i].st)
+					: stat(f, &fst[i].st);
+	}
+	return fst;
+}
+
+static void add_sat(unsigned long long *a, unsigned long long b)
+{
+	if (__builtin_add_overflow(*a, b, a))
+		*a = ULLONG_MAX; /* saturate; EOVERFLOW diagnostics: sprint 05 */
+}
+
+struct run {
+	const struct options *o;
+	struct fstatus *fst;
+	int width;
+	struct counts tot;
+	size_t processed;
+	bool ok;
+	bool files_from_stdin; /* --files0-from=- */
+};
+
+/* One name from argv or a files0 list. IDX indexes the fstatus array for
+ * pre-stat'ed inputs; pass with fst[idx].failed reset for streamed names. */
+static void run_name(struct run *r, char *name, size_t idx)
+{
+	r->processed++;
+
+	if (name && r->files_from_stdin && strcmp(name, "-") == 0) {
+		/* printf - | wc --files0-from=-  (wc.c:942-950) */
+		tal_error(0,
+			  "when reading file names from standard input, "
+			  "no file name of '%s' allowed", name);
+		r->ok = false;
 		return;
 	}
-	fst->failed = (!file || strcmp(file, "-") == 0)
-			      ? fstat(STDIN_FILENO, &fst->st)
-			      : stat(file, &fst->st);
+	if (name && !name[0]) {
+		if (r->o->files_from)
+			tal_error(0, "%s:%zu: invalid zero-length file name",
+				  r->o->files_from, r->processed);
+		else
+			tal_error(0, "invalid zero-length file name");
+		r->ok = false;
+		return;
+	}
+
+	struct counts c;
+
+	if (!count_one(name, r->o, &r->fst[idx], r->width, &c))
+		r->ok = false;
+	add_sat(&r->tot.lines, c.lines);
+	add_sat(&r->tot.words, c.words);
+	add_sat(&r->tot.chars, c.chars);
+	add_sat(&r->tot.bytes, c.bytes);
+	if (c.linelength > r->tot.linelength)
+		r->tot.linelength = c.linelength; /* -L total is the max */
+}
+
+/* Read a files0 list into tokens (readtokens0 semantics: NUL-terminated,
+ * a final unterminated token still counts, empty input yields none). */
+static char **slurp_list(FILE *f, const char *name, size_t size,
+			 size_t *ntok, char **bufout)
+{
+	char *data = xmalloc(size + 1);
+	size_t got = fread(data, 1, size, f);
+
+	if (ferror(f))
+		tal_die(1, 0, "cannot read file names from '%s'", name);
+	data[got] = '\0';
+
+	size_t n = 0;
+
+	for (size_t i = 0; i < got; i++)
+		if (data[i] == '\0')
+			n++;
+	if (got && data[got - 1] != '\0')
+		n++; /* final token without NUL */
+
+	char **tok = xmalloc((n ? n : 1) * sizeof *tok);
+	size_t k = 0, start = 0;
+
+	for (size_t i = 0; i <= got && k < n; i++) {
+		if (i == got || data[i] == '\0') {
+			tok[k++] = data + start;
+			start = i + 1;
+		}
+	}
+	*ntok = n;
+	*bufout = data;
+	return tok;
 }
 
 int main(int argc, char **argv)
@@ -102,36 +203,123 @@ int main(int argc, char **argv)
 
 	options_parse(&o, argc, argv);
 
-	const char *file = o.nfiles ? o.files[0] : NULL;
+	char **files = o.files;
+	size_t nfiles = o.nfiles;
+	FILE *fstream = NULL;
+	char **slurped = NULL;
+	char *slurpbuf = NULL;
+	bool streamed = false;
 
-	if (o.nfiles == 1 && file && !file[0]) {
-		/* GNU diagnoses the zero-length name instead of open("") —
-		 * wc.c:952-969 — and never counts, so no counter gate applies. */
-		tal_error(0, "invalid zero-length file name");
-		return 1;
+	if (o.files_from) {
+		if (o.nfiles) {
+			/* wc.c:876-884; second line has no program prefix. */
+			tal_error(0, "extra operand '%s'", o.files[0]);
+			fprintf(stderr, "file operands cannot be combined "
+					"with --files0-from\n");
+			fprintf(stderr,
+				"Try '%s --help' for more information.\n",
+				argv[0]);
+			return 1;
+		}
+		if (strcmp(o.files_from, "-") == 0)
+			fstream = stdin;
+		else {
+			fstream = fopen(o.files_from, "r");
+			if (!fstream)
+				tal_die(1, errno,
+					"cannot open '%s' for reading",
+					o.files_from);
+		}
+
+		/* Slurp when the list is a reasonably sized regular file so
+		 * names can be stat'ed for the width estimate; else stream
+		 * one name at a time with width 1 (wc.c:896-917). */
+		struct stat st;
+		unsigned long long phys = 0;
+		long pages = sysconf(_SC_PHYS_PAGES);
+		long psize = sysconf(_SC_PAGESIZE);
+
+		if (pages > 0 && psize > 0)
+			phys = (unsigned long long)pages *
+			       (unsigned long long)psize;
+		unsigned long long cap = 10ULL * 1024 * 1024;
+
+		if (phys / 2 < cap)
+			cap = phys / 2;
+		if (fstat(fileno(fstream), &st) == 0 && S_ISREG(st.st_mode) &&
+		    st.st_size >= 0 && (unsigned long long)st.st_size <= cap) {
+			slurped = slurp_list(fstream, o.files_from,
+					     (size_t)st.st_size, &nfiles,
+					     &slurpbuf);
+			/* GNU fcloses the slurped stream even when it is
+			 * stdin (wc.c:905) — observable: fstat(STDIN) then
+			 * fails for "-" entries, so the width estimator
+			 * skips them. Replicate. */
+			fclose(fstream);
+			fstream = NULL;
+			files = slurped;
+		} else {
+			streamed = true;
+			nfiles = 0;
+			files = NULL;
+		}
+	} else if (nfiles == 0) {
+		/* Bare stdin behaves as one unnamed input (wc.c:921-924). */
+		static char *stdin_only[] = { NULL };
+
+		files = stdin_only;
+		nfiles = 1;
 	}
 
-	/* Scaffolding gates, removed as the sprints land (04: multi-file,
-	 * --total, --files0-from). */
-	if (o.files_from)
-		tal_die(2, 0, "--files0-from not implemented yet (sprint 04)");
-	if (o.total != TOTAL_AUTO)
-		tal_die(2, 0, "--total not implemented yet (sprint 04)");
-	if (o.nfiles > 1)
-		tal_die(2, 0, "multiple files not implemented yet (sprint 04)");
+	struct run r;
 
-	bool ok = true;
+	memset(&r, 0, sizeof r);
+	r.o = &o;
+	r.fst = input_fstatus(&o, streamed ? 0 : nfiles, files);
+	r.ok = true;
+	r.files_from_stdin = o.files_from &&
+			     strcmp(o.files_from, "-") == 0;
+	r.width = o.total == TOTAL_ONLY
+			  ? 1 /* no alignment requirement (wc.c:931-932) */
+			  : compute_number_width(streamed ? 0 : nfiles, r.fst);
 
-	{
-		struct fstatus fst;
+	if (streamed) {
+		char *tok = NULL;
+		size_t cap = 0;
+		ssize_t len;
 
-		input_fstatus(&o, file, &fst);
-		int width = compute_number_width(1, &fst);
-
-		ok = count_one(file, &o, &fst, width);
+		while ((len = getdelim(&tok, &cap, '\0', fstream)) != -1) {
+			if (len > 0 && tok[len - 1] == '\0')
+				tok[len - 1] = '\0'; /* strip delimiter */
+			r.fst[0].failed = 1; /* re-stat per streamed name */
+			run_name(&r, tok, 0);
+		}
+		free(tok);
+		if (ferror(fstream)) {
+			tal_error(errno, "%s: read error", o.files_from);
+			r.ok = false;
+		}
+		if (fstream != stdin)
+			fclose(fstream);
+	} else {
+		for (size_t i = 0; i < nfiles; i++)
+			run_name(&r, files[i], i);
 	}
+
+	if (o.total != TOTAL_NEVER &&
+	    (o.total != TOTAL_AUTO || r.processed > 1)) {
+		struct counts t = r.tot;
+
+		write_counts(&t, &o, r.width,
+			     o.total == TOTAL_ONLY ? NULL : "total");
+	}
+
+	free(r.fst);
+	free(slurped);
+	free(slurpbuf);
+	free(o.files);
 
 	if (have_read_stdin && close(STDIN_FILENO) != 0)
 		tal_die(1, errno, "-");
-	return ok ? 0 : 1;
+	return r.ok ? 0 : 1;
 }

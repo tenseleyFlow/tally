@@ -79,6 +79,11 @@ bool tal_sep_wchar(unsigned long wc);
  * and the unit-test reference. */
 int tal_mbws_match(const unsigned char *p, size_t n);
 
+/* wcwidth with a lazily built BMP cache (one-time ~65K libc probes on first
+ * multibyte -L use; libc-derived, so per-box parity holds). A libc call per
+ * character held utf8 -L to 1.06x over the ref; the table lookup gates it. */
+int tal_wcwidth(unsigned long cp);
+
 /* Build tal_ws for the current locale + POSIXLY_CORRECT. In multibyte
  * locales probes iswspace over U+0080..U+3000 (no real libc defines space
  * above that; the golden/fuzz oracles would surface a violation). ~12K calls,
