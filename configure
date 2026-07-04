@@ -61,10 +61,9 @@ WCHAR_IS_UTF32=$(try_compile wchar32 '
 #include <wchar.h>
 int main(void){ _Static_assert(sizeof(wchar_t)==4, "w"); return 0; }' '')
 
-HAS_POSIX_FADVISE=$(try_compile fadvise "
-$CONF_CFLAGS
+HAS_POSIX_FADVISE=$(try_compile fadvise '
 #include <fcntl.h>
-int main(void){ return posix_fadvise(0, 0, 0, POSIX_FADV_SEQUENTIAL); }" "$CONF_CFLAGS")
+int main(void){ return posix_fadvise(0, 0, 0, POSIX_FADV_SEQUENTIAL); }' "$CONF_CFLAGS")
 
 if [ "$HAS_MBRTOC32" != 1 ] && [ "$WCHAR_IS_UTF32" != 1 ]; then
 	echo "configure: WARNING: no mbrtoc32 and wchar_t is not UTF-32 — multibyte parity unavailable" >&2

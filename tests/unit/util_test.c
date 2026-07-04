@@ -1,3 +1,5 @@
+#include <stdlib.h>
+
 #include "util.h"
 #include "tests/unit/test.h"
 
@@ -18,6 +20,8 @@ int main(void)
 	CHECK("xmalloc non-null", p != 0);
 	void *q = xmalloc(0);
 	CHECK("xmalloc(0) non-null", q != 0);
+	free(p);
+	free(q); /* LeakSanitizer runs by default on Linux; keep tests leak-free */
 
 	return test_summary("util_test");
 }

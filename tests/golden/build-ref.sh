@@ -39,22 +39,26 @@ else
 	fi
 fi
 
-# Out-of-tree (VPATH) build; gmake src/wc pulls in just the lib prerequisites.
+# Out-of-tree (VPATH) build; `make src/wc` pulls in just the lib prerequisites,
+# but that shortcut target has raced under high -j on a fresh tree — fall back
+# to a full build, then retry the target (logs append so no arm hides another).
 # FORCE_UNSAFE_CONFIGURE: coreutils configure balks at uid 0 (vmactions runs as
 # root); harmless otherwise.
 absrc=$(cd "$srcdir" && pwd)
 bld="$OUT/build-$TAG"
 mkdir -p "$bld"
 njobs=$( (sysctl -n hw.ncpu || nproc || echo 4) 2>/dev/null | head -1 )
+MAKE=make
+command -v gmake >/dev/null 2>&1 && MAKE=gmake
 ( cd "$bld" \
 	&& { [ -x config.status ] || FORCE_UNSAFE_CONFIGURE=1 "$absrc/configure" \
 		--disable-nls --quiet ${CC:+CC="$CC"} >configure.log 2>&1; } \
-	&& { gmake -s -j"$njobs" src/wc >build.log 2>&1 \
-	     || gmake -s -j"$njobs" >build.log 2>&1 \
-	     || make -s -j"$njobs" src/wc >build.log 2>&1 \
-	     || make -s -j"$njobs" >build.log 2>&1; } ) || {
+	&& { "$MAKE" -s -j"$njobs" src/wc >build.log 2>&1 \
+	     || "$MAKE" -s -j"$njobs" >>build.log 2>&1 \
+	     || "$MAKE" -s -j"$njobs" src/wc >>build.log 2>&1; } ) || {
 	echo "build-ref: coreutils build failed; tail of logs:" >&2
-	tail -5 "$bld/configure.log" "$bld/build.log" 2>/dev/null >&2
+	tail -5 "$bld/configure.log" 2>/dev/null >&2
+	tail -20 "$bld/build.log" 2>/dev/null >&2
 	exit 1
 }
 cp "$bld/src/wc" "$bin"
