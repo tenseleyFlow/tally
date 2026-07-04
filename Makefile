@@ -32,7 +32,15 @@ ALL_CFLAGS = $(STD) $(WARN) $(OPT) $(CFLAGS) $(CONF_CFLAGS) -Isrc -I. -D_FILE_OF
 # Explicit source list — a stray .c in src/ is a deliberate add, not a silent
 # one. Keep sorted; tests/run.sh asserts this list matches the filesystem.
 SRC = \
+	src/count.c \
+	src/format.c \
+	src/io.c \
 	src/main.c \
+	src/options.c \
+	src/scalar.c \
+	src/simd_avx2.c \
+	src/simd_neon.c \
+	src/simd_sse2.c \
 	src/util.c \
 	src/sys/detect.c
 OBJ = $(SRC:.c=.o)

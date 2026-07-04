@@ -14,21 +14,39 @@ trap 'rm -rf "$work"' EXIT INT TERM
 
 # Reuse the platform feature macros the real build computed.
 CONF_CFLAGS=""
-[ -f config.mk ] && CONF_CFLAGS=$(sed -n 's/^CONF_CFLAGS = //p' config.mk)
+AVX2_CFLAGS=""
+[ -f config.mk ] && {
+	CONF_CFLAGS=$(sed -n 's/^CONF_CFLAGS = //p' config.mk)
+	AVX2_CFLAGS=$(sed -n 's/^AVX2_CFLAGS = //p' config.mk)
+}
 
 san="-fsanitize=address,undefined -fno-sanitize-recover=all"
 [ "${TAL_TEST_SANITIZE:-1}" = 0 ] && san=""
 
 CFLAGS_T="-std=c11 -g -O1 $san $CONF_CFLAGS -Isrc -I. -D_FILE_OFFSET_BITS=64"
 
-# Library sources = all src/*.c and src/sys/*.c except main.c (tests provide main).
-libsrc=$(ls src/*.c src/sys/*.c 2>/dev/null | grep -v '/main\.c$' | tr '\n' ' ')
+# Library objects = all src/*.c and src/sys/*.c except main.c (tests provide
+# main). Compiled per-TU because ISA flags apply to single files only — a
+# global -mavx2 would let autovectorization emit illegal instructions for
+# SSE2-only hosts (same rule as the Makefile).
+echo "== build test objects =="
+libobjs=""
+for s in src/*.c src/sys/*.c; do
+	case "$s" in */main.c) continue ;; esac
+	o="$work/$(echo "$s" | tr / _).o"
+	extra=""
+	case "$s" in */simd_avx2.c) extra="$AVX2_CFLAGS" ;; esac
+	if ! $CC $CFLAGS_T $extra -c -o "$o" "$s" 2>"$work/obj.build"; then
+		echo "BUILD FAIL $s"; cat "$work/obj.build"; fail=1
+	fi
+	libobjs="$libobjs $o"
+done
 
 echo "== unit tests =="
 for t in tests/unit/*_test.c; do
 	[ -e "$t" ] || continue
 	name=$(basename "$t" .c)
-	if ! $CC $CFLAGS_T -o "$work/$name" "$t" $libsrc 2>"$work/$name.build"; then
+	if ! $CC $CFLAGS_T -o "$work/$name" "$t" $libobjs 2>"$work/$name.build"; then
 		echo "BUILD FAIL $name"; cat "$work/$name.build"; fail=1; continue
 	fi
 	if ! "$work/$name"; then
