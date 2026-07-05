@@ -1,13 +1,94 @@
-.TH TALLY 1 "2026" "tally 0.0.0-dev" "User Commands"
+.TH TALLY 1 "July 2026" "tally 0.1.0" "User Commands"
 .SH NAME
-tally \- print newline, word, and byte counts for each file
+tally, ty \- print newline, word, and byte counts for each file
 .SH SYNOPSIS
 .B tally
 [\fIOPTION\fR]... [\fIFILE\fR]...
+.br
+.B tally
+[\fIOPTION\fR]... \fB\-\-files0\-from\fR=\fIF\fR
 .SH DESCRIPTION
-Drop-in reimplementation of GNU
+.B tally
+is a from-scratch reimplementation of GNU
 .BR wc (1)
-with byte-identical output and SIMD counting kernels.
-Stub page: the full manual arrives with the 0.1 release (sprint 06).
+(parity target: coreutils 9.11) with SIMD counting kernels. Given the same
+input and flags it produces byte-identical output \(em same counts, same
+column widths, same diagnostics (modulo the program name), same exit codes
+\(em while running substantially faster on every measured workload.
+.B ty
+is the same binary under a shorter name.
+.PP
+Print newline, word, and byte counts for each FILE, and a total line if
+more than one FILE is specified. A word is a nonempty sequence of non white
+space delimited by white space characters or by start or end of input.
+.PP
+With no FILE, or when FILE is \-, read standard input.
+.SH OPTIONS
+The options below select which counts are printed, always in the following
+order: newline, word, character, byte, maximum line length.
+.TP
+.BR \-c ", " \-\-bytes
+print the byte counts
+.TP
+.BR \-m ", " \-\-chars
+print the character counts
+.TP
+.BR \-l ", " \-\-lines
+print the newline counts
+.TP
+.B \-\-debug
+indicate which counting kernels are in use
+.TP
+.B \-\-files0\-from=\fIF\fR
+read input from the files specified by NUL-terminated names in file F;
+if F is \-, read names from standard input
+.TP
+.BR \-L ", " \-\-max\-line\-length
+print the maximum display width
+.TP
+.BR \-w ", " \-\-words
+print the word counts
+.TP
+.B \-\-total=\fIWHEN\fR
+when to print a line with total counts; WHEN can be: auto, always, only,
+never
+.TP
+.B \-\-help
+display help and exit
+.TP
+.B \-\-version
+output version information and exit
+.SH LOCALES
+Word separators and character counts follow the current locale exactly as
+GNU wc does: the libc's
+.BR iswspace (3)
+classification plus the non-breaking-space family (U+00A0, U+2007, U+202F,
+U+2060) unless
+.B POSIXLY_CORRECT
+is set. Invalid byte sequences count toward words but not characters.
+Display widths for \fB\-L\fR come from
+.BR wcwidth (3).
+.SH EXIT STATUS
+0 on success, 1 if any file could not be read (counts for readable files
+are still printed).
+.SH DEVIATIONS
+tally matches GNU wc byte-for-byte with these documented exceptions:
+the program-name token in diagnostics; \fB\-\-help\fR/\fB\-\-version\fR
+text; \fB\-\-debug\fR informational output; "total" is not translated; and
+word counts are independent of read fragmentation \(em GNU wc 9.11
+miscounts words when adjacent multibyte spaces are split across read
+boundaries (reported upstream), tally does not.
+.SH EXAMPLES
+.TP
+.B tally \-l src/*.c
+newline counts and a total for the sources
+.TP
+.B ty big.log
+lines, words, and bytes \(em the default set
+.TP
+.B find . \-print0 | tally \-\-files0\-from=\-
+count every file found, NUL-safe
 .SH SEE ALSO
 .BR wc (1)
+.PP
+Source and measured benchmarks: https://github.com/tenseleyFlow/tally

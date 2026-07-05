@@ -4,6 +4,7 @@ CLAUDE.md
 
 # build artifacts
 /tally
+/ty
 *.o
 *.d
 config.mk

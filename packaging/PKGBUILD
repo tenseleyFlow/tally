@@ -1,0 +1,30 @@
+# Maintainer: mfwolffe
+# AUR package for tally. Activates once the GitHub repo/release is public.
+pkgname=tally
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="GNU wc reimplementation: byte-identical output, SIMD word counting"
+arch=('x86_64' 'aarch64')
+url="https://github.com/tenseleyFlow/tally"
+license=('GPL-3.0-or-later')
+makedepends=('gcc')
+source=("$url/releases/download/v$pkgver/tally-$pkgver.tar.gz")
+sha256sums=('SKIP') # pinned by release automation
+
+build() {
+	cd "$pkgname-$pkgver"
+	./configure
+	# Respect makepkg CFLAGS; no -march=native anywhere — kernels are
+	# per-TU with runtime dispatch.
+	make release
+}
+
+check() {
+	cd "$pkgname-$pkgver"
+	make test
+}
+
+package() {
+	cd "$pkgname-$pkgver"
+	make DESTDIR="$pkgdir" PREFIX=/usr install
+}

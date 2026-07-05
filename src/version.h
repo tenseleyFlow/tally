@@ -2,6 +2,6 @@
 #define TAL_VERSION_H
 
 /* Single source of truth: --version, Makefile dist name, packaging. */
-#define TAL_VERSION "0.0.0-dev"
+#define TAL_VERSION "0.1.0"
 
 #endif /* TAL_VERSION_H */

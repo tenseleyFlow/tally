@@ -49,13 +49,17 @@ DEP = $(OBJ:.o=.d)
 
 .PHONY: all clean distclean install uninstall test bench fmt analyze release debug pgo dist
 
-all: config.h tally
+all: config.h tally ty
 
 config.h config.mk:
 	@./configure
 
 tally: $(OBJ)
 	$(CC) $(ALL_CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
+
+# ty is the same binary under a shorter name (easier than wc, even).
+ty: tally
+	@cp -f tally ty
 
 # ISA-specific flags go ONLY on the matching kernel TU: a global -mavx2 would
 # let the compiler autovectorize scalar paths into illegal instructions on
@@ -67,7 +71,7 @@ src/simd_avx2.o: ALL_CFLAGS += $(AVX2_CFLAGS)
 
 release: OPT = -O3 -flto -DNDEBUG
 release: clean all
-	@strip tally 2>/dev/null || true
+	@strip tally ty 2>/dev/null || true
 
 debug: OPT = -O0 -g -fsanitize=address,undefined
 debug: LDFLAGS += -fsanitize=address,undefined
@@ -93,10 +97,12 @@ analyze:
 install: all
 	@mkdir -p $(BINDIR) $(MANDIR)
 	install -m 0755 tally $(BINDIR)/tally
+	ln -sf tally $(BINDIR)/ty
 	install -m 0644 doc/tally.1 $(MANDIR)/tally.1
+	install -m 0644 doc/ty.1 $(MANDIR)/ty.1
 
 uninstall:
-	rm -f $(BINDIR)/tally $(MANDIR)/tally.1
+	rm -f $(BINDIR)/tally $(BINDIR)/ty $(MANDIR)/tally.1 $(MANDIR)/ty.1
 
 # Self-contained source tarball for packaging (AUR, Homebrew). Tracked files
 # only; portable across GNU and BSD tar.
@@ -108,7 +114,7 @@ dist:
 	@echo "dist: $(DISTNAME).tar.gz"
 
 clean:
-	rm -f $(OBJ) $(DEP) tally
+	rm -f $(OBJ) $(DEP) tally ty
 
 distclean: clean
 	rm -f config.h config.mk
