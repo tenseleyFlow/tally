@@ -9,7 +9,7 @@ url="https://github.com/tenseleyFlow/tally"
 license=('GPL-3.0-or-later')
 makedepends=('gcc')
 source=("$url/releases/download/v$pkgver/tally-$pkgver.tar.gz")
-sha256sums=('SKIP') # pinned by release automation
+sha256sums=('8ed3e585500bd0091fcb32beae097d84a3d1b304de46e5b51796d1b976c6358f')
 
 build() {
 	cd "$pkgname-$pkgver"

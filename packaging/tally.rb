@@ -4,7 +4,7 @@ class Tally < Formula
   desc "GNU wc reimplementation: byte-identical output, SIMD word counting"
   homepage "https://github.com/tenseleyFlow/tally"
   url "https://github.com/tenseleyFlow/tally/releases/download/v0.1.0/tally-0.1.0.tar.gz"
-  sha256 "PINNED_BY_RELEASE"
+  sha256 "8ed3e585500bd0091fcb32beae097d84a3d1b304de46e5b51796d1b976c6358f"
   license "GPL-3.0-or-later"
 
   def install
