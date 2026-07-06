@@ -1,3 +1,9 @@
+# tally 0.1.1 (2026-07-05)
+
+- Ship the GPL-3.0 license text (COPYING) — v0.1.0 tarballs lacked it.
+- README: install methods (Homebrew tap, AUR, release tarballs), CI badge.
+- Homebrew formula live in tenseleyFlow/homebrew-tap.
+
 # tally 0.1.0 (2026-07-04)
 
 First release. A from-scratch reimplementation of GNU wc(1), byte-identical
