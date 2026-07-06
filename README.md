@@ -1,5 +1,7 @@
 # tally
 
+[![ci](https://github.com/tenseleyFlow/tally/actions/workflows/ci.yml/badge.svg)](https://github.com/tenseleyFlow/tally/actions/workflows/ci.yml)
+
 A from-scratch C reimplementation of GNU `wc(1)`. Byte-identical output
 (parity target: coreutils 9.11), faster on every workload measured. Also
 installs as `ty`, which is easier to type than `wc`.
@@ -37,7 +39,16 @@ Apple Silicon.
 | `-l` (big file) | 1.0x (read-bound tie) | 2.8-6.1x |
 | 10,000 small files | 1.5x | 1.2x |
 
-## Build
+## Install
+
+Homebrew (macOS, Linuxbrew):
+
+    brew install tenseleyflow/tap/tally
+
+Arch: a `PKGBUILD` ships in `packaging/`. Release tarballs with checksums
+are on the [releases page](https://github.com/tenseleyFlow/tally/releases).
+
+## Build from source
 
     ./configure && gmake        # BSD: gmake; Linux/macOS: make works too
     gmake test                  # unit + golden parity + fuzz (builds GNU wc
