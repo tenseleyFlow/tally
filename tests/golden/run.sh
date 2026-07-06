@@ -444,6 +444,12 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 		phase "$UUT" "$ref" "parity-pc" "$L"
 		unset POSIXLY_CORRECT
 	done
+	# Same matrix through the mmap fast path (roadmap P1): threshold 1
+	# maps every regular file. One locale suffices — the mapped/read
+	# split is below locale semantics.
+	export TAL_MMAP_MIN=1
+	phase "$UUT" "$ref" "parity-mmap" "${utf8:-C}"
+	unset TAL_MMAP_MIN
 	check_positioned "$UUT" "$ref" parity
 	check_dribble "$UUT" parity
 	if [ "$active" -ge 5 ]; then

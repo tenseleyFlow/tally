@@ -127,9 +127,25 @@ static int count_bytes_only(int fd, struct fstatus *fst, struct counts *c)
 static int count_lines(int fd, const struct options *o, struct counts *c)
 {
 	static nl_fn nl; /* selected once per process */
+	struct tal_map m;
 
 	if (!nl)
 		nl = pick_nl_kernel(o->debug);
+
+	if (tal_map_acquire(fd, &m)) {
+		int err = 0;
+
+		if (sigsetjmp(tal_sigbus_jmp, 1)) {
+			err = EIO; /* file truncated under the mapping */
+		} else {
+			tal_sigbus_armed = 1;
+			c->lines += nl(m.data, m.len);
+			c->bytes += m.len;
+		}
+		tal_sigbus_armed = 0;
+		tal_map_release(&m);
+		return err;
+	}
 
 	for (;;) {
 		ssize_t got = tal_read(fd, buf, TAL_IO_BUFSIZE);
@@ -381,7 +397,38 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 	/* Who counts lines: words kernel > chars kernel > a dedicated pass. */
 	bool nl_pass = !scalar_mode && o->lines && !words_pass && !chars_pass;
 
-	for (;;) {
+	struct tal_map m;
+	bool mapped = tal_map_acquire(fd, &m);
+	int maperr = 0;
+
+	if (mapped) {
+		/* One contiguous span per pass: no chunk-boundary carries. */
+		if (sigsetjmp(tal_sigbus_jmp, 1)) {
+			maperr = EIO; /* truncated under the mapping */
+		} else {
+			tal_sigbus_armed = 1;
+			c->bytes += m.len;
+			if (scalar_mode) {
+				if (tal_ws.multibyte)
+					tal_swc_mb(m.data, m.len, c, &st);
+				else
+					tal_swc_sb(m.data, m.len, c, &st);
+			} else {
+				if (words_pass)
+					words_chunk(kern, m.data, m.len, c, &st);
+				if (chars_pass)
+					chars_chunk(u8kern, m.data, m.len,
+						    &ctmp, &cst);
+				if (l_pass)
+					lscan_chunk(lkern, m.data, m.len,
+						    &ltmp, &lst);
+				if (nl_pass)
+					c->lines += nlk(m.data, m.len);
+			}
+		}
+		tal_sigbus_armed = 0;
+		tal_map_release(&m);
+	} else for (;;) {
 		ssize_t got = tal_read(fd, buf, TAL_IO_BUFSIZE);
 
 		if (got < 0)
@@ -425,7 +472,7 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 				c->linelength = ltmp.linelength;
 		}
 	}
-	return 0;
+	return maperr;
 }
 
 int count_fd(int fd, const struct options *o, struct fstatus *fst,

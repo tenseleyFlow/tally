@@ -72,6 +72,8 @@ while [ "$i" -lt "$N" ]; do
 	[ -n "$utf8loc" ] && [ "$(rnd 3)" != 0 ] && loc=$utf8loc
 	pc=""
 	[ "$(rnd 4)" = 0 ] && pc="POSIXLY_CORRECT=1"
+	mm=""
+	[ "$(rnd 3)" = 0 ] && mm="TAL_MMAP_MIN=1"
 	# Sizes biased toward the 256 KiB buffer boundary.
 	case $(rnd 4) in
 	0) size=$(( $(rnd 4096) )) ;;
@@ -93,7 +95,7 @@ while [ "$i" -lt "$N" ]; do
 	fi
 
 	# shellcheck disable=SC2086
-	env $pc LC_ALL=$loc "$TALLY" $flags $fargs >"$work/a.out" 2>"$work/a.err"; ra=$?
+	env $pc $mm LC_ALL=$loc "$TALLY" $flags $fargs >"$work/a.out" 2>"$work/a.err"; ra=$?
 	# shellcheck disable=SC2086
 	env $pc LC_ALL=$loc "$ref"   $flags $fargs >"$work/b.out" 2>"$work/b.err"; rb=$?
 	# Normalize: counts lines end in the (differing) file path's basename only
