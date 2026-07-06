@@ -18,9 +18,11 @@ echo "== release $TAG: full verification =="
 gmake clean >/dev/null
 gmake CFLAGS="-O2 -Werror"
 gmake test
-gmake bench 2>&1 | tee "bench-report-$VER.txt" | grep "PERF GATE"
-grep -q "FAIL" "bench-report-$VER.txt" && {
-	echo "release: perf gate not clean" >&2; exit 1; }
+gmake bench > "bench-report-$VER.txt" 2>&1; benchrc=$?
+grep "PERF GATE" "bench-report-$VER.txt"
+# Gate on the bench EXIT CODE: it reflects gated cells only. A grep for
+# "FAIL" overmatches the informational smoke row (aborted a release once).
+[ "$benchrc" = 0 ] || { echo "release: perf gate not clean" >&2; exit 1; }
 
 echo "== dist =="
 gmake dist

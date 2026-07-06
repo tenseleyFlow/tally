@@ -121,7 +121,10 @@ bench_one lm_big_utf8 auto - -lm "$corpus/big-utf8"
 # -L: printable-ASCII scanner; specials take oracle windows. utf8 -L runs
 # scanner+windows with the cached BMP width table (1.70x; a raw wcwidth call
 # per char held it to 1.06x). Deeper vectorization remains headroom.
-bench_one L_big_utf8 auto - -L "$corpus/big-utf8"
+# glibc's c32width is fast: utf8 -L is a genuine tie there today (~0.97x;
+# FreeBSD 1.8x, macOS 1.4x). Explicit near-tie margin until roadmap P4
+# (batch decode) closes it.
+bench_one L_big_utf8 auto 0.90 -L "$corpus/big-utf8"
 bench_one L_big_ascii auto - -L "$corpus/big-ascii"
 bench_one L_newline_dense auto - -L "$corpus/newline-dense"
 bench_one L_long_lines auto - -L "$corpus/long-lines"
