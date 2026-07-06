@@ -124,6 +124,19 @@ static int count_bytes_only(int fd, struct fstatus *fst, struct counts *c)
 	return 0;
 }
 
+/* Guarded regions live in leaf helpers: gcc's -Wclobbered rightly objects
+ * to mutable locals sharing a frame with sigsetjmp. */
+static int mapped_lines(nl_fn nl, const struct tal_map *m, struct counts *c)
+{
+	if (sigsetjmp(tal_sigbus_jmp, 1))
+		return EIO; /* file truncated under the mapping */
+	tal_sigbus_armed = 1;
+	c->lines += nl(m->data, m->len);
+	c->bytes += m->len;
+	tal_sigbus_armed = 0;
+	return 0;
+}
+
 static int count_lines(int fd, const struct options *o, struct counts *c)
 {
 	static nl_fn nl; /* selected once per process */
@@ -133,16 +146,8 @@ static int count_lines(int fd, const struct options *o, struct counts *c)
 		nl = pick_nl_kernel(o->debug);
 
 	if (tal_map_acquire(fd, &m)) {
-		int err = 0;
+		int err = mapped_lines(nl, &m, c);
 
-		if (sigsetjmp(tal_sigbus_jmp, 1)) {
-			err = EIO; /* file truncated under the mapping */
-		} else {
-			tal_sigbus_armed = 1;
-			c->lines += nl(m.data, m.len);
-			c->bytes += m.len;
-		}
-		tal_sigbus_armed = 0;
 		tal_map_release(&m);
 		return err;
 	}
@@ -354,6 +359,50 @@ static void chars_chunk(u8_fn u8k, const unsigned char *p, size_t len,
 	}
 }
 
+/* Pass configuration + states bundled so the sigsetjmp frame (the mapped
+ * helper) holds no mutable locals (gcc -Wclobbered). */
+struct gpasses {
+	lwc_fn kern;
+	u8_fn u8kern;
+	lscan_fn lkern;
+	nl_fn nlk;
+	bool scalar_mode, words_pass, chars_pass, l_pass, nl_pass;
+	struct counts *c;
+	struct wstate *st;
+	struct counts *ctmp;
+	struct wstate *cst;
+	struct counts *ltmp;
+	struct wstate *lst;
+};
+
+/* One contiguous span per pass: no chunk-boundary carries. */
+static int mapped_general(const struct gpasses *g, const struct tal_map *m)
+{
+	if (sigsetjmp(tal_sigbus_jmp, 1))
+		return EIO; /* truncated under the mapping */
+	tal_sigbus_armed = 1;
+	g->c->bytes += m->len;
+	if (g->scalar_mode) {
+		if (tal_ws.multibyte)
+			tal_swc_mb(m->data, m->len, g->c, g->st);
+		else
+			tal_swc_sb(m->data, m->len, g->c, g->st);
+	} else {
+		if (g->words_pass)
+			words_chunk(g->kern, m->data, m->len, g->c, g->st);
+		if (g->chars_pass)
+			chars_chunk(g->u8kern, m->data, m->len, g->ctmp,
+				    g->cst);
+		if (g->l_pass)
+			lscan_chunk(g->lkern, m->data, m->len, g->ltmp,
+				    g->lst);
+		if (g->nl_pass)
+			g->c->lines += g->nlk(m->data, m->len);
+	}
+	tal_sigbus_armed = 0;
+	return 0;
+}
+
 /* The general path: words, and/or chars (multibyte), and/or -L. Fused
  * lines+words kernel plus (when -m) the validated char kernel as a second
  * pass over the hot chunk; -L and non-UTF-8 charsets take the scalar oracle,
@@ -397,36 +446,14 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 	/* Who counts lines: words kernel > chars kernel > a dedicated pass. */
 	bool nl_pass = !scalar_mode && o->lines && !words_pass && !chars_pass;
 
+	struct gpasses gp = { kern, u8kern, lkern, nlk, scalar_mode,
+			      words_pass, chars_pass, l_pass, nl_pass,
+			      c, &st, &ctmp, &cst, &ltmp, &lst };
 	struct tal_map m;
-	bool mapped = tal_map_acquire(fd, &m);
 	int maperr = 0;
 
-	if (mapped) {
-		/* One contiguous span per pass: no chunk-boundary carries. */
-		if (sigsetjmp(tal_sigbus_jmp, 1)) {
-			maperr = EIO; /* truncated under the mapping */
-		} else {
-			tal_sigbus_armed = 1;
-			c->bytes += m.len;
-			if (scalar_mode) {
-				if (tal_ws.multibyte)
-					tal_swc_mb(m.data, m.len, c, &st);
-				else
-					tal_swc_sb(m.data, m.len, c, &st);
-			} else {
-				if (words_pass)
-					words_chunk(kern, m.data, m.len, c, &st);
-				if (chars_pass)
-					chars_chunk(u8kern, m.data, m.len,
-						    &ctmp, &cst);
-				if (l_pass)
-					lscan_chunk(lkern, m.data, m.len,
-						    &ltmp, &lst);
-				if (nl_pass)
-					c->lines += nlk(m.data, m.len);
-			}
-		}
-		tal_sigbus_armed = 0;
+	if (tal_map_acquire(fd, &m)) {
+		maperr = mapped_general(&gp, &m);
 		tal_map_release(&m);
 	} else for (;;) {
 		ssize_t got = tal_read(fd, buf, TAL_IO_BUFSIZE);
