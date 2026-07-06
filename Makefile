@@ -44,38 +44,53 @@ SRC = \
 	src/util.c \
 	src/ws.c \
 	src/sys/detect.c
-OBJ = $(SRC:.c=.o)
+
+# Objects are segregated per build mode: switching between plain, release and
+# debug is incremental, and a sanitizer object can never poison a plain link
+# (that class of bug bit twice before this existed).
+MODE ?= plain
+OBJDIR = obj/$(MODE)
+OBJ = $(SRC:src/%.c=$(OBJDIR)/%.o)
 DEP = $(OBJ:.o=.d)
 
-.PHONY: all clean distclean install uninstall test bench fmt analyze release debug pgo dist
+.PHONY: all clean distclean install uninstall test bench fmt analyze release debug pgo dist FORCE
 
 all: config.h tally ty
 
 config.h config.mk:
 	@./configure
 
-tally: $(OBJ)
+# The real link lives in the mode's objdir; ./tally is a checked copy so a
+# mode switch can never leave a stale binary at the top (the objects split
+# fixed stale .o files; this fixes the same class at the link).
+$(OBJDIR)/tally: $(OBJ)
 	$(CC) $(ALL_CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
 
+tally: $(OBJDIR)/tally FORCE
+	@cmp -s $(OBJDIR)/tally tally 2>/dev/null || cp -f $(OBJDIR)/tally tally
+
 # ty is the same binary under a shorter name (easier than wc, even).
-ty: tally
-	@cp -f tally ty
+ty: tally FORCE
+	@cmp -s tally ty 2>/dev/null || cp -f tally ty
+
+FORCE:
 
 # ISA-specific flags go ONLY on the matching kernel TU: a global -mavx2 would
 # let the compiler autovectorize scalar paths into illegal instructions on
 # SSE2-only hosts (runtime dispatch is the whole point).
-src/simd_avx2.o: ALL_CFLAGS += $(AVX2_CFLAGS)
+$(OBJDIR)/simd_avx2.o: ALL_CFLAGS += $(AVX2_CFLAGS)
 
-%.o: %.c
+$(OBJDIR)/%.o: src/%.c
+	@mkdir -p $(@D)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -c -o $@ $<
 
-release: OPT = -O3 -flto -DNDEBUG
-release: clean all
+release:
+	@$(MAKE) MODE=release OPT="-O3 -flto -DNDEBUG" all
 	@strip tally ty 2>/dev/null || true
 
-debug: OPT = -O0 -g -fsanitize=address,undefined
-debug: LDFLAGS += -fsanitize=address,undefined
-debug: clean all
+debug:
+	@$(MAKE) MODE=debug OPT="-O0 -g -fsanitize=address,undefined" \
+		LDFLAGS="-fsanitize=address,undefined" all
 
 # Opt-in profile-guided build (clang/llvm). Not the default release — packaged
 # builds stay plain for reproducibility.
@@ -114,7 +129,7 @@ dist:
 	@echo "dist: $(DISTNAME).tar.gz"
 
 clean:
-	rm -f $(OBJ) $(DEP) tally ty
+	rm -rf obj tally ty
 
 distclean: clean
 	rm -f config.h config.mk
