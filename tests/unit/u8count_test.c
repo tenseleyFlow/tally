@@ -62,6 +62,8 @@ static const char *const badshape[] = {
 	"\xe4\xb8",         /* truncated (mid-buffer, next is ascii) */
 };
 
+/* Tail-hold bound: vector width (64 for avx512) + 3 bytes of lookahead. */
+
 /* Resync-count oracle over [p, p+n): chars = valid sequence starts, lines =
  * 0x0A bytes; an incomplete pend at EOF counts nothing (error bytes). */
 static void resync_count(const unsigned char *p, size_t n,
@@ -107,7 +109,7 @@ static void check_u8(const char *name,
 
 			snprintf(msg, sizeof msg, "%s valid n=%zu off=%zu",
 				 name, len, off);
-			CHECK(msg, used <= len && len - used < 35);
+			CHECK(msg, used <= len && len - used < 67);
 			resync_count(b + off + used, len - used, &sc, &sl);
 			resync_count(b + off, len, &oc, &ol);
 			CHECK(msg, kc + sc == oc && kl + sl == ol);
@@ -128,7 +130,7 @@ static void check_u8(const char *name,
 		size_t used = fn(b, 20000, &kc, &kl);
 
 		snprintf(msg, sizeof msg, "%s bad[%zu]", name, k);
-		CHECK(msg, used <= 20000 && 20000 - used < 35);
+		CHECK(msg, used <= 20000 && 20000 - used < 67);
 		resync_count(b + used, 20000 - used, &sc, &sl);
 		resync_count(b, 20000, &oc, &ol);
 		CHECK(msg, kc + sc == oc && kl + sl == ol);
@@ -147,7 +149,7 @@ static void check_u8(const char *name,
 		size_t used = fn(b, len, &kc, &kl);
 
 		snprintf(msg, sizeof msg, "%s binary n=%zu", name, len);
-		CHECK(msg, used <= len && len - used < 35);
+		CHECK(msg, used <= len && len - used < 67);
 		resync_count(b + used, len - used, &sc, &sl);
 		resync_count(b, len, &oc, &ol);
 		CHECK(msg, kc + sc == oc && kl + sl == ol);
@@ -184,6 +186,10 @@ int main(void)
 #if TAL_HAS_AVX2
 	if (tal_cpu_has_avx2())
 		check_u8("avx2", tal_u8count_avx2);
+#endif
+#if TAL_HAS_AVX512
+	if (tal_cpu_has_avx512bw())
+		check_u8("avx512", tal_u8count_avx512);
 #endif
 #if TAL_HAS_NEON && defined(__ARM_NEON)
 	check_u8("neon", tal_u8count_neon);

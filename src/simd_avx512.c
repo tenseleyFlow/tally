@@ -49,6 +49,78 @@ unsigned long long tal_nlcount_avx512(const unsigned char *p, size_t n)
 	return lines;
 }
 
+/* -m kernel: valid-sequence-start counting (see simd_avx2.c for the
+ * derivation). Mask compares collapse the whole accumulator scheme: start
+ * positions land in a __mmask64, popcnt accumulates in scalar registers. */
+
+static inline __mmask64 range_k(__m512i v, unsigned char lo, unsigned char hi)
+{
+	return _mm512_cmp_epu8_mask(v, _mm512_set1_epi8((char)lo),
+				    _MM_CMPINT_NLT) &
+	       _mm512_cmp_epu8_mask(v, _mm512_set1_epi8((char)hi),
+				    _MM_CMPINT_LE);
+}
+
+size_t tal_u8count_avx512(const unsigned char *p, size_t n,
+			  unsigned long long *chars, unsigned long long *lines)
+{
+	const __m512i nlv = _mm512_set1_epi8('\n');
+	const __m512i contmask = _mm512_set1_epi8((char)0xC0);
+	const __m512i contbits = _mm512_set1_epi8((char)0x80);
+	const __m512i lob = _mm512_set1_epi8((char)0x80);
+	const __m512i hib = _mm512_set1_epi8((char)0xBF);
+	unsigned long long ch = 0, nl = 0;
+	size_t rem = n;
+
+	while (rem >= 67) {
+		__m512i v = _mm512_loadu_si512((const void *)p);
+		__m512i v1 = _mm512_loadu_si512((const void *)(p + 1));
+		__mmask64 cont2 = _mm512_cmpeq_epi8_mask(
+			_mm512_and_si512(
+				_mm512_loadu_si512((const void *)(p + 2)),
+				contmask),
+			contbits);
+		__mmask64 cont3 = _mm512_cmpeq_epi8_mask(
+			_mm512_and_si512(
+				_mm512_loadu_si512((const void *)(p + 3)),
+				contmask),
+			contbits);
+		__mmask64 cont1 = _mm512_cmpeq_epi8_mask(
+			_mm512_and_si512(v1, contmask), contbits);
+		__mmask64 ascii = _mm512_cmplt_epu8_mask(v, contbits);
+		__mmask64 ok2 = range_k(v, 0xC2, 0xDF) & cont1;
+		/* second-byte bounds tighten for E0/ED (F0/F4). */
+		__m512i lo3 = _mm512_mask_blend_epi8(
+			_mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8((char)0xE0)),
+			lob, _mm512_set1_epi8((char)0xA0));
+		__m512i hi3 = _mm512_mask_blend_epi8(
+			_mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8((char)0xED)),
+			hib, _mm512_set1_epi8((char)0x9F));
+		__mmask64 sec3 = _mm512_cmp_epu8_mask(v1, lo3, _MM_CMPINT_NLT) &
+				 _mm512_cmp_epu8_mask(v1, hi3, _MM_CMPINT_LE);
+		__mmask64 ok3 = range_k(v, 0xE0, 0xEF) & sec3 & cont2;
+		__m512i lo4 = _mm512_mask_blend_epi8(
+			_mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8((char)0xF0)),
+			lob, _mm512_set1_epi8((char)0x90));
+		__m512i hi4 = _mm512_mask_blend_epi8(
+			_mm512_cmpeq_epi8_mask(v, _mm512_set1_epi8((char)0xF4)),
+			hib, _mm512_set1_epi8((char)0x8F));
+		__mmask64 sec4 = _mm512_cmp_epu8_mask(v1, lo4, _MM_CMPINT_NLT) &
+				 _mm512_cmp_epu8_mask(v1, hi4, _MM_CMPINT_LE);
+		__mmask64 ok4 = range_k(v, 0xF0, 0xF4) & sec4 & cont2 & cont3;
+
+		ch += (unsigned long long)__builtin_popcountll(
+			ascii | ok2 | ok3 | ok4);
+		nl += (unsigned long long)__builtin_popcountll(
+			_mm512_cmpeq_epi8_mask(v, nlv));
+		p += 64;
+		rem -= 64;
+	}
+	*chars += ch;
+	*lines += nl;
+	return n - rem;
+}
+
 #else
 typedef int tal_simd_avx512_unused; /* ISO C forbids an empty translation unit */
 #endif

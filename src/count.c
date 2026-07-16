@@ -313,6 +313,12 @@ static u8_fn pick_u8_kernel(bool debug)
 			name = "avx2";
 		}
 #endif
+#if TAL_HAS_AVX512
+		if (tal_cpu_has_avx512bw()) {
+			fn = tal_u8count_avx512;
+			name = "avx512";
+		}
+#endif
 	}
 	if (debug)
 		fprintf(stderr, "%s: using %s char kernel\n", tal_prog, name);

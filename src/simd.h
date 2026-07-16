@@ -47,6 +47,8 @@ size_t tal_lwc_neon(const unsigned char *p, size_t n, unsigned prev_is_ws,
 int tal_u8walk(const unsigned char *p, size_t n, unsigned long long *chars,
 	       unsigned long long *lines);
 unsigned long long tal_nlcount_avx512(const unsigned char *p, size_t n);
+size_t tal_u8count_avx512(const unsigned char *p, size_t n,
+			  unsigned long long *chars, unsigned long long *lines);
 size_t tal_u8count_sse2(const unsigned char *p, size_t n,
 			unsigned long long *chars, unsigned long long *lines);
 size_t tal_u8count_avx2(const unsigned char *p, size_t n,

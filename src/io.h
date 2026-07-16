@@ -6,7 +6,9 @@
 
 /* Matches GNU wc's IO_BUFSIZE (256 KiB since coreutils 9.6). The counting
  * buffer is 64-byte aligned so SIMD kernels load at full width from offset 0. */
+#ifndef TAL_IO_BUFSIZE
 #define TAL_IO_BUFSIZE (256 * 1024)
+#endif
 
 /* read(2) with EINTR retry. Returns bytes read, 0 at EOF, -1 on error. */
 ssize_t tal_read(int fd, void *buf, size_t n);
