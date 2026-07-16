@@ -49,7 +49,7 @@ bench_one() {
 	_lbl=$1; _metric=$2; _margin=$3; shift 3
 	_csv="$work/m_$_lbl.csv"
 	hyperfine -N -w 3 -r 20 --export-csv "$_csv" \
-		"$TALLY $*" "$ref $*" >/dev/null 2>&1 || {
+		"${TAL_BENCH_PREFIX:-}$TALLY $*" "$ref $*" >/dev/null 2>&1 || {
 		echo "bench: hyperfine failed for $_lbl"; rc=1; return; }
 	if [ -n "${TAL_PERF_METRIC:-}" ]; then
 		_metric=$TAL_PERF_METRIC
@@ -150,5 +150,9 @@ bench_one tiny_many auto - --files0-from="$corpus/tiny.list"
 bench_one l_big_ascii min vm-info -l "$corpus/big-ascii"
 bench_one l_newline_dense min vm-info -l "$corpus/newline-dense"
 bench_one l_long_lines min vm-info -l "$corpus/long-lines"
+# Threaded -l (roadmap P5, opt-in): 4 pread workers vs the serial ref. The
+# env prefix reaches tally only (wc ignores TAL_THREADS). dorado: the -l tie
+# becomes 1.84x; VM runners report-only like the other -l cells.
+TAL_BENCH_PREFIX="env TAL_THREADS=4 " bench_one l_mt4_big_ascii min vm-info -l "$corpus/big-ascii"
 
 exit $rc

@@ -386,6 +386,32 @@ check_writeerr() {
 	fi
 }
 
+# Threaded -l (--tally-threads, P5 extension) must print byte-identical
+# output to the serial path: counts, column widths, totals, diagnostics.
+check_threads() {
+	_bin=$1; _label=$2
+	for f in "$corpus"/ascii.txt "$corpus"/utf8.txt "$corpus"/lines.txt \
+		 "$corpus"/binary.bin "$corpus"/mbsplit.txt; do
+		[ -f "$f" ] || continue
+		for fl in -l -lc; do
+			a=$("$_bin" "$fl" "$f" 2>&1; echo "rc=$?")
+			b=$(env TAL_MT_MIN=1 "$_bin" --tally-threads=3 "$fl" \
+				"$f" 2>&1; echo "rc=$?")
+			if [ "$a" != "$b" ]; then
+				echo "  THREADS DIFF ($_label): $fl $f"
+				echo "threads" >>"$work/fails"
+			fi
+		done
+	done
+	a=$("$_bin" -lc "$corpus/ascii.txt" "$corpus/lines.txt" 2>&1; echo "rc=$?")
+	b=$(env TAL_MT_MIN=1 "$_bin" --tally-threads=4 -lc \
+		"$corpus/ascii.txt" "$corpus/lines.txt" 2>&1; echo "rc=$?")
+	if [ "$a" != "$b" ]; then
+		echo "  THREADS DIFF ($_label): multi-file totals"
+		echo "threads" >>"$work/fails"
+	fi
+}
+
 # Line-buffered stdout: concurrent writers into one pipe may interleave rows
 # but never tear them (wc.c:810-812). Property test on the UUT alone.
 check_interleave() {
@@ -457,6 +483,7 @@ if [ -f tests/golden/PARITY_ACTIVE ] && [ -x "$UUT" ]; then
 		check_sigpipe "$UUT" "$ref" parity
 		check_writeerr "$UUT" parity
 		check_interleave "$UUT" parity
+		check_threads "$UUT" parity
 	fi
 	if [ -s "$work/fails" ]; then
 		n=$(wc -l <"$work/fails" | tr -d ' ')

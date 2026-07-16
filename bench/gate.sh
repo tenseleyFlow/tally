@@ -17,9 +17,15 @@ col=2
 
 # Match the binary on the FIRST token of the command, so a corpus path containing
 # "tally" or "wc" can't be mistaken for the tool's row.
-a=$(awk -F, -v c="$col" 'NR>1 { split($1,w," "); n=split(w[1],q,"/"); b=q[n];
+# A leading "env VAR=..." prefix (per-tool env cells) is skipped: the binary
+# is the first token that is neither "env" nor a VAR= assignment.
+a=$(awk -F, -v c="$col" 'NR>1 { split($1,w," "); i=1;
+	while (w[i]=="env" || index(w[i],"=")) i++;
+	n=split(w[i],q,"/"); b=q[n];
 	if (b=="tally" || b=="tally.uut" || b ~ /^tally-/) { print $c; exit } }' "$csv")
-t=$(awk -F, -v c="$col" 'NR>1 { split($1,w," "); n=split(w[1],q,"/"); b=q[n];
+t=$(awk -F, -v c="$col" 'NR>1 { split($1,w," "); i=1;
+	while (w[i]=="env" || index(w[i],"=")) i++;
+	n=split(w[i],q,"/"); b=q[n];
 	if (b=="wc" || b ~ /^wc-/) { print $c; exit } }' "$csv")
 
 if [ -z "$a" ] || [ -z "$t" ]; then
