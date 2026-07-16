@@ -64,9 +64,12 @@ runtime; the binary never executes instructions the host lacks.
 
 Anything beyond GNU wc's surface lives under `--tally-*` and is off by
 default. `--tally-threads=N` (or `TAL_THREADS=N`) counts large regular
-files with N parallel readers — `-l` on a 200 MB cached file drops from
-23 ms to 13 ms with 4 threads on the dev box, turning the read-bound tie
-with GNU into a 1.8x win. Output stays byte-identical.
+files with N parallel readers, covering `-l`, `-w`, and `-m`. On the dev
+box with 4 threads and a 200 MB cached file: `-l` 23 ms to 13 ms (the
+read-bound tie with GNU becomes 1.8x), the default invocation 30 ms to
+14 ms, `-m` on UTF-8 45 ms to 16 ms. Output stays byte-identical; word
+and character joins are placed only at positions where no multibyte
+sequence or separator can span them.
 
 ## Parity notes
 

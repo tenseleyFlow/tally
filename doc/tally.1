@@ -67,8 +67,9 @@ namespace and never change default behavior.
 count large regular files with
 .I N
 parallel readers (\fBauto\fR selects one per online CPU, capped at 8).
-Applies to line counting; other inputs and modes fall back to the serial
-path. Output is byte-identical to a serial run. The
+Applies to line, word, and character counting; \fB\-L\fR, pipes, devices,
+and small files fall back to the serial path. Output is byte-identical to
+a serial run. The
 .B TAL_THREADS
 environment variable sets the same value; the flag wins.
 .SH LOCALES
