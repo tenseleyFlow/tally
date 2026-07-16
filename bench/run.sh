@@ -112,8 +112,10 @@ bench_one default_long_lines auto - "$corpus/long-lines"
 bench_one w_big_ascii auto - -w "$corpus/big-ascii"
 bench_one w_big_utf8 auto - -w "$corpus/big-utf8"
 bench_one w_big_typography auto - -w "$corpus/big-typography"
-# -m: the validated char kernel (sprint 03). Binary is the adversarial floor
-# (every span rejects to the scalar oracle's inline decoder).
+# -m: the valid-start counting kernel (roadmap P3): chars = valid sequence
+# starts, position-independent, so invalid bytes cost nothing extra -- binary
+# runs at full vector speed (60x here; the old whole-span validator held it
+# to 1.5x by rejecting every span to the scalar oracle).
 bench_one m_big_utf8 auto - -m "$corpus/big-utf8"
 bench_one m_big_ascii auto - -m "$corpus/big-ascii"
 bench_one m_big_binary auto - -m "$corpus/big-binary"
