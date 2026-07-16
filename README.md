@@ -36,7 +36,7 @@ Apple Silicon.
 | `-m` (UTF-8) | 51x | 47x |
 | `-m` (binary) | 60x | 44x |
 | `-L` (ASCII) | 10x | 5.2x |
-| `-L` (UTF-8) | 1.8x | 1.4x |
+| `-L` (UTF-8) | 5.5x | 4.2x |
 | `-l` (big file) | 1.0x (read-bound tie) | 2.8-6.1x |
 | 10,000 small files | 1.5x | 1.2x |
 
