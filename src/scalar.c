@@ -328,6 +328,104 @@ out:
 	st->in_word = in_word;
 }
 
+/* Words+lines-only stepper for the words pass's pend/hold windows (utf8):
+ * the oracle's word logic and pend carry WITHOUT char counting. The full
+ * oracle here leaked chars into the words pass's counts struct, and -wm
+ * combinations then overcounted chars by the number of multibyte chars
+ * resolved in oracle windows (vs GNU: +123 on the binary bench class,
+ * 2026-07-16). Width is not tracked: -L runs its own pass. */
+void tal_wwalk(const unsigned char *p, size_t n, struct counts *c,
+	       struct wstate *st)
+{
+	size_t i = 0;
+	bool in_word = st->in_word;
+
+	while (i < n) {
+		if (st->npend == 0) {
+			unsigned long long words = 0, lines = 0;
+
+			while (i < n && p[i] < 0x80) {
+				unsigned char b = p[i++];
+				bool in_word2 = !tal_ws.is_ws[b];
+
+				lines += b == '\n';
+				words += (unsigned)(!in_word & in_word2);
+				in_word = in_word2;
+			}
+			c->words += words;
+			c->lines += lines;
+			while (i < n && p[i] >= 0x80) {
+				unsigned long cp;
+				int r = u8dec(p + i, n - i, &cp);
+
+				if (r > 0) {
+					if (tal_sep_wchar(cp)) {
+						in_word = false;
+					} else {
+						c->words += !in_word;
+						in_word = true;
+					}
+					i += (size_t)r;
+				} else if (r < 0) {
+					c->words += !in_word;
+					in_word = true;
+					i++;
+				} else {
+					while (i < n)
+						st->pend[st->npend++] = p[i++];
+					goto out;
+				}
+			}
+			if (i >= n)
+				break;
+			continue;
+		}
+		while (st->npend < sizeof st->pend && i < n)
+			st->pend[st->npend++] = p[i++];
+		while (st->npend) {
+			unsigned long cp;
+			int r = u8dec(st->pend, st->npend, &cp);
+
+			if (r == 0) {
+				if (i < n && st->npend < sizeof st->pend)
+					break; /* refill */
+				if (i >= n)
+					goto out; /* carry */
+				r = -1;
+			}
+			size_t k = 1;
+
+			if (r > 0) {
+				/* ASCII swallowed into pend during refill
+				 * keeps the byte-table semantics (lines,
+				 * whitespace) like classify_byte. */
+				if (cp < 0x80) {
+					bool in_word2 =
+						!tal_ws.is_ws[(unsigned char)cp];
+
+					c->lines += cp == '\n';
+					c->words +=
+						(unsigned)(!in_word & in_word2);
+					in_word = in_word2;
+				} else if (tal_sep_wchar(cp)) {
+					in_word = false;
+				} else {
+					c->words += !in_word;
+					in_word = true;
+				}
+				k = (size_t)r;
+			} else {
+				c->words += !in_word;
+				in_word = true;
+			}
+			st->npend -= (unsigned)k;
+			memmove(st->pend, st->pend + k, st->npend);
+		}
+	}
+out:
+	st->in_word = in_word;
+}
+
 /* Chars-only scalar stepper for the -m pass's rejected/held spans: same
  * decode and pend semantics as the oracle, none of the word/width work the
  * u8 pass throws away (P3: the full oracle held binary -m to 1.5x). */

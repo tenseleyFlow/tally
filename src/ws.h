@@ -114,6 +114,11 @@ void tal_swc_sb(const unsigned char *p, size_t n, struct counts *c,
 /* Multibyte locales (any charset): decode + classify. */
 void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 		struct wstate *st);
+/* Words+lines-only stepper for the words pass's oracle windows in utf8
+ * locales (the full oracle leaked chars into the words pass's counts). */
+void tal_wwalk(const unsigned char *p, size_t n, struct counts *c,
+	       struct wstate *st);
+
 /* Chars-only stepper (decode + pend semantics, no word/width work) for the
  * -m pass's scalar spans. Pending bytes at EOF are errors: no chars. */
 void tal_u8scalar(const unsigned char *p, size_t n, struct counts *c,

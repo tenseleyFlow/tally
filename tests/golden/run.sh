@@ -125,6 +125,9 @@ CASES='
 03 -lwmcL %C/utf8odd.txt
 03 -lwmcL %C/invalid.txt
 03 -lwmcL %C/tabs.txt
+03 -lwm %C/mbsplit.txt
+03 -wm %C/nbspsplit.txt
+03 -lwm %C/binary.bin
 03 -cm %C/utf8.txt
 03 -mc %C/utf8.txt
 03 -m %S
@@ -393,9 +396,9 @@ check_threads() {
 	for f in "$corpus"/ascii.txt "$corpus"/utf8.txt "$corpus"/lines.txt \
 		 "$corpus"/binary.bin "$corpus"/mbsplit.txt; do
 		[ -f "$f" ] || continue
-		for fl in -l -lc; do
-			a=$("$_bin" "$fl" "$f" 2>&1; echo "rc=$?")
-			b=$(env TAL_MT_MIN=1 "$_bin" --tally-threads=3 "$fl" \
+		for fl in -l -lc -lwm -wm ''; do
+			a=$("$_bin" $fl "$f" 2>&1; echo "rc=$?")
+			b=$(env TAL_MT_MIN=1 "$_bin" --tally-threads=3 $fl \
 				"$f" 2>&1; echo "rc=$?")
 			if [ "$a" != "$b" ]; then
 				echo "  THREADS DIFF ($_label): $fl $f"

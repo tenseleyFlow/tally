@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <sys/stat.h>
 #include <stdalign.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -330,7 +331,10 @@ static void words_chunk(lwc_fn kern, const unsigned char *p, size_t len,
 			 * prefix, then resume the kernel. */
 			size_t pre = len - off < 16 ? len - off : 16;
 
-			tal_swc_mb(p + off, pre, c, st);
+			if (tal_ws.utf8)
+				tal_wwalk(p + off, pre, c, st);
+			else
+				tal_swc_mb(p + off, pre, c, st);
 			off += pre;
 			continue;
 		}
@@ -348,7 +352,10 @@ static void words_chunk(lwc_fn kern, const unsigned char *p, size_t len,
 			 * all-suspect input degrades to scalar, never loops. */
 			size_t hold = len - off < 2 ? len - off : 2;
 
-			tal_swc_mb(p + off, hold, c, st);
+			if (tal_ws.utf8)
+				tal_wwalk(p + off, hold, c, st);
+			else
+				tal_swc_mb(p + off, hold, c, st);
 			off += hold;
 		}
 	}
@@ -429,6 +436,190 @@ static int mapped_general(const struct gpasses *g, const struct tal_map *m)
 	return 0;
 }
 
+/* Threaded general counting (roadmap P5 slice 2): contiguous spans, one
+ * worker each, running the same chunk machinery as the serial loop. Every
+ * byte of multibyte machinery (separators, sequences) is >= 0x80, so a span
+ * boundary whose PREVIOUS byte is ASCII is context-free: no separator match
+ * or sequence can span it, in_word seeds from that one byte, and a span can
+ * never end with a pending partial sequence. Boundaries snap forward to the
+ * first such position; a 64 KiB window with no ASCII byte (pathological)
+ * falls back to the serial path. -L and scalar_mode stay serial. */
+struct gmt_job {
+	int fd;
+	off_t start, end;
+	lwc_fn kern;
+	u8_fn u8kern;
+	nl_fn nlk;
+	bool words_pass, chars_pass, nl_pass;
+	struct counts c, ctmp;
+	struct wstate st, cst;
+	int err;
+};
+
+static void *gmt_worker(void *v)
+{
+	struct gmt_job *j = v;
+	unsigned char *wbuf = malloc(TAL_IO_BUFSIZE);
+
+	if (!wbuf) {
+		j->err = ENOMEM;
+		return NULL;
+	}
+	for (off_t off = j->start; off < j->end;) {
+		size_t want = TAL_IO_BUFSIZE;
+
+		if (off + (off_t)want > j->end)
+			want = (size_t)(j->end - off);
+		ssize_t got = tal_pread_full(j->fd, wbuf, want, off);
+
+		if (got < 0) {
+			j->err = errno;
+			break;
+		}
+		if (got == 0)
+			break; /* file shrank: count what exists */
+		j->c.bytes += (unsigned long long)got;
+		if (j->words_pass)
+			words_chunk(j->kern, wbuf, (size_t)got, &j->c, &j->st);
+		if (j->chars_pass)
+			chars_chunk(j->u8kern, wbuf, (size_t)got, &j->ctmp,
+				    &j->cst);
+		if (j->nl_pass)
+			j->c.lines += j->nlk(wbuf, (size_t)got);
+		off += got;
+	}
+	free(wbuf);
+	return NULL;
+}
+
+static int count_general_mt(int fd, const struct options *o, struct counts *c,
+			    lwc_fn kern, u8_fn u8kern, nl_fn nlk,
+			    bool words_pass, bool chars_pass, bool nl_pass)
+{
+	struct stat st;
+
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))
+		return -1;
+
+	off_t start = lseek(fd, 0, SEEK_CUR);
+
+	if (start < 0 || st.st_size <= start)
+		return -1;
+
+	off_t len = st.st_size - start;
+
+	if (len < tal_mt_min())
+		return -1;
+
+	int njobs = o->threads;
+
+	if ((off_t)njobs > len / TAL_IO_BUFSIZE)
+		njobs = (int)(len / TAL_IO_BUFSIZE);
+	if (njobs > 256)
+		njobs = 256;
+	if (njobs < 2)
+		return -1;
+
+	struct gmt_job *jobs = calloc((size_t)njobs, sizeof *jobs);
+
+	if (!jobs)
+		return -1;
+
+	/* Boundaries: even split, snapped forward to ASCII-preceded joins. */
+	unsigned char win[65536];
+	off_t prev_end = start;
+	int ok = 1;
+
+	for (int t = 0; t < njobs && ok; t++) {
+		off_t b = start + (off_t)((double)len * t / njobs);
+		unsigned char seed = ' ';
+
+		if (t > 0) {
+			if (tal_ws.multibyte) {
+				size_t wn = sizeof win;
+
+				if ((off_t)wn > start + len - (b - 1))
+					wn = (size_t)(start + len - (b - 1));
+				ssize_t got = tal_pread_full(fd, win, wn,
+							     b - 1);
+
+				if (got <= 0) {
+					ok = 0;
+					break;
+				}
+				ssize_t k = 0;
+
+				while (k < got && win[k] >= 0x80)
+					k++;
+				if (k == got) {
+					ok = 0; /* no ASCII: serial */
+					break;
+				}
+				seed = win[k];
+				b = b + k; /* byte b-1 is win[k], ASCII */
+			} else {
+				if (tal_pread_full(fd, win, 1, b - 1) != 1) {
+					ok = 0;
+					break;
+				}
+				seed = win[0];
+			}
+			if (b < prev_end)
+				b = prev_end; /* snap overran: empty span */
+		}
+		jobs[t] = (struct gmt_job){
+			.fd = fd, .start = t ? b : start, .end = 0,
+			.kern = kern, .u8kern = u8kern, .nlk = nlk,
+			.words_pass = words_pass, .chars_pass = chars_pass,
+			.nl_pass = nl_pass,
+		};
+		wstate_init(&jobs[t].st);
+		wstate_init(&jobs[t].cst);
+		jobs[t].st.in_word = t ? !tal_ws.kernel_ws[seed] : false;
+		if (t > 0)
+			jobs[t - 1].end = jobs[t].start;
+		prev_end = jobs[t].start;
+	}
+	jobs[njobs - 1].end = start + len;
+	if (!ok) {
+		free(jobs);
+		return -1;
+	}
+
+	tal_mt_run(njobs, gmt_worker, jobs, sizeof jobs[0]);
+
+	/* Merge mirrors count_general's finish rules. Mid-span pends are
+	 * impossible by construction; the last span's EOF pend follows the
+	 * same GNU error-path semantics as the serial finish. */
+	int err = 0;
+	unsigned long long total = 0;
+
+	for (int t = 0; t < njobs; t++) {
+		struct gmt_job *j = &jobs[t];
+
+		if (words_pass)
+			tal_swc_finish(&j->c, &j->st);
+		c->lines += j->c.lines;
+		c->words += j->c.words;
+		c->bytes += j->c.bytes;
+		total += j->c.bytes;
+		if (chars_pass) {
+			tal_swc_finish(&j->ctmp, &j->cst);
+			c->chars += j->ctmp.chars;
+			if (!words_pass)
+				c->lines += j->ctmp.lines;
+		}
+		if (j->err && !err)
+			err = j->err;
+	}
+	free(jobs);
+	(void)lseek(fd, start + (off_t)total, SEEK_SET);
+	if (o->debug)
+		fprintf(stderr, "%s: counted with %d threads\n", tal_prog,
+			njobs);
+	return err;
+}
+
 /* The general path: words, and/or chars (multibyte), and/or -L. Fused
  * lines+words kernel plus (when -m) the validated char kernel as a second
  * pass over the hot chunk; -L and non-UTF-8 charsets take the scalar oracle,
@@ -471,6 +662,15 @@ static int count_general(int fd, const struct options *o, struct counts *c,
 			   (o->linelength && !l_pass);
 	/* Who counts lines: words kernel > chars kernel > a dedicated pass. */
 	bool nl_pass = !scalar_mode && o->lines && !words_pass && !chars_pass;
+
+	if (o->threads > 1 && !scalar_mode && !o->linelength &&
+	    (words_pass || chars_pass || nl_pass)) {
+		int r = count_general_mt(fd, o, c, kern, u8kern, nlk,
+					 words_pass, chars_pass, nl_pass);
+
+		if (r >= 0)
+			return r;
+	}
 
 	struct gpasses gp = { kern, u8kern, lkern, nlk, scalar_mode,
 			      words_pass, chars_pass, l_pass, nl_pass,
