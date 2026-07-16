@@ -14,8 +14,24 @@ int tal_cpu_has_avx2(void)
 #endif
 }
 
+int tal_cpu_has_avx512bw(void)
+{
+#if TAL_HAS_AVX512 && TAL_HAS_CPU_SUPPORTS
+	static signed char cached; /* 0 unknown, 1 yes, -1 no */
+
+	if (!cached)
+		cached = (__builtin_cpu_supports("avx512f") &&
+			  __builtin_cpu_supports("avx512bw")) ? 1 : -1;
+	return cached > 0;
+#else
+	return 0;
+#endif
+}
+
 const char *tal_isa_name(void)
 {
+	if (tal_cpu_has_avx512bw())
+		return "avx512";
 	if (tal_cpu_has_avx2())
 		return "avx2";
 #if TAL_HAS_SSE2

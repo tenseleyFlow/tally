@@ -8,6 +8,7 @@ int main(void)
 
 	CHECK("isa name non-null", isa != 0);
 	CHECK("isa is a known tier",
+	      strcmp(isa, "avx512") == 0 ||
 	      strcmp(isa, "avx2") == 0 || strcmp(isa, "sse2") == 0 ||
 	      strcmp(isa, "neon") == 0 || strcmp(isa, "scalar") == 0);
 

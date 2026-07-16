@@ -76,6 +76,10 @@ int main(void)
 		if (tal_cpu_has_avx2())
 			check_kernel("avx2", tal_nlcount_avx2, base);
 #endif
+#if TAL_HAS_AVX512
+		if (tal_cpu_has_avx512bw())
+			check_kernel("avx512", tal_nlcount_avx512, base);
+#endif
 #if TAL_HAS_NEON && defined(__ARM_NEON)
 		check_kernel("neon", tal_nlcount_neon, base);
 #endif
@@ -89,6 +93,10 @@ int main(void)
 #if TAL_HAS_AVX2
 	if (tal_cpu_has_avx2())
 		check_kernel("avx2 all-nl", tal_nlcount_avx2, base);
+#endif
+#if TAL_HAS_AVX512
+	if (tal_cpu_has_avx512bw())
+		check_kernel("avx512 all-nl", tal_nlcount_avx512, base);
 #endif
 #if TAL_HAS_NEON && defined(__ARM_NEON)
 	check_kernel("neon all-nl", tal_nlcount_neon, base);

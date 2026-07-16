@@ -38,6 +38,12 @@ static nl_fn pick_nl_kernel(bool debug)
 		name = "avx2";
 	}
 #endif
+#if TAL_HAS_AVX512
+	if (tal_cpu_has_avx512bw()) {
+		fn = tal_nlcount_avx512;
+		name = "avx512";
+	}
+#endif
 	/* Mirrors GNU: acceleration info prints only when the lines-only path
 	 * consults the kernel (wc.c:137-180); text is a sanctioned deviation.
 	 * This is also the hook the CI engagement check greps (audit 04). */

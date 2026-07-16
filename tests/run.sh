@@ -15,9 +15,11 @@ trap 'rm -rf "$work"' EXIT INT TERM
 # Reuse the platform feature macros the real build computed.
 CONF_CFLAGS=""
 AVX2_CFLAGS=""
+AVX512_CFLAGS=""
 [ -f config.mk ] && {
 	CONF_CFLAGS=$(sed -n 's/^CONF_CFLAGS = //p' config.mk)
 	AVX2_CFLAGS=$(sed -n 's/^AVX2_CFLAGS = //p' config.mk)
+	AVX512_CFLAGS=$(sed -n 's/^AVX512_CFLAGS = //p' config.mk)
 }
 
 san="-fsanitize=address,undefined -fno-sanitize-recover=all"
@@ -47,7 +49,10 @@ for s in src/*.c src/sys/*.c; do
 	case "$s" in */main.c) continue ;; esac
 	o="$work/$(echo "$s" | tr / _).o"
 	extra=""
-	case "$s" in */simd_avx2.c) extra="$AVX2_CFLAGS" ;; esac
+	case "$s" in
+	*/simd_avx2.c) extra="$AVX2_CFLAGS" ;;
+	*/simd_avx512.c) extra="$AVX512_CFLAGS" ;;
+	esac
 	if ! $CC $CFLAGS_T $extra -c -o "$o" "$s" 2>"$work/obj.build"; then
 		echo "BUILD FAIL $s"; cat "$work/obj.build"; fail=1
 	fi

@@ -39,6 +39,7 @@ SRC = \
 	src/options.c \
 	src/scalar.c \
 	src/simd_avx2.c \
+	src/simd_avx512.c \
 	src/simd_neon.c \
 	src/simd_sse2.c \
 	src/util.c \
@@ -79,6 +80,7 @@ FORCE:
 # let the compiler autovectorize scalar paths into illegal instructions on
 # SSE2-only hosts (runtime dispatch is the whole point).
 $(OBJDIR)/simd_avx2.o: ALL_CFLAGS += $(AVX2_CFLAGS)
+$(OBJDIR)/simd_avx512.o: ALL_CFLAGS += $(AVX512_CFLAGS)
 
 $(OBJDIR)/%.o: src/%.c
 	@mkdir -p $(@D)
