@@ -278,6 +278,10 @@ static u8_fn pick_u8_kernel(bool debug)
 	const char *name = "scalar";
 
 	if (tal_ws.utf8) {
+#if TAL_HAS_SSE2 && defined(__SSE2__)
+		fn = tal_u8count_sse2;
+		name = "sse2";
+#endif
 #if TAL_HAS_NEON && defined(__ARM_NEON)
 		fn = tal_u8count_neon;
 		name = "neon";
@@ -342,7 +346,7 @@ static void chars_chunk(u8_fn u8k, const unsigned char *p, size_t len,
 		if (cst->npend) {
 			size_t pre = len - off < 16 ? len - off : 16;
 
-			tal_swc_mb(p + off, pre, tmp, cst);
+			tal_u8scalar(p + off, pre, tmp, cst);
 			off += pre;
 			continue;
 		}
@@ -351,9 +355,11 @@ static void chars_chunk(u8_fn u8k, const unsigned char *p, size_t len,
 
 		off += used;
 		if (off < len) {
-			size_t step = len - off < 4096 ? len - off : 4096;
+			/* Only the kernel's lookahead tail (<= 34 bytes) and
+			 * chunk-boundary pends land here. */
+			size_t step = len - off < 1024 ? len - off : 1024;
 
-			tal_swc_mb(p + off, step, tmp, cst);
+			tal_u8scalar(p + off, step, tmp, cst);
 			off += step;
 		}
 	}

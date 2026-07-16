@@ -46,6 +46,8 @@ size_t tal_lwc_neon(const unsigned char *p, size_t n, unsigned prev_is_ws,
  * kernel tails and the no-SIMD tier: returns 0 ok / -1 invalid. */
 int tal_u8walk(const unsigned char *p, size_t n, unsigned long long *chars,
 	       unsigned long long *lines);
+size_t tal_u8count_sse2(const unsigned char *p, size_t n,
+			unsigned long long *chars, unsigned long long *lines);
 size_t tal_u8count_avx2(const unsigned char *p, size_t n,
 			unsigned long long *chars, unsigned long long *lines);
 size_t tal_u8count_neon(const unsigned char *p, size_t n,

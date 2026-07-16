@@ -236,6 +236,103 @@ size_t tal_lwc_sse2(const unsigned char *p, size_t n, unsigned prev_is_ws,
 	return k;
 }
 
+/* -m kernel: counts VALID SEQUENCE STARTS; mirrors simd_avx2.c (see the
+ * derivation there). No pshufb needed, so baseline x86-64 gets the same
+ * no-rejection -m path; SSE2 lacks blendv, so the E0/ED (F0/F4) second-byte
+ * bound selection is and/andnot/or. */
+
+static inline __m128i range_in(__m128i v, unsigned char lo, unsigned char hi)
+{
+	/* lo <= v <= hi (unsigned): (v - lo) <= (hi - lo) */
+	__m128i x = _mm_sub_epi8(v, _mm_set1_epi8((char)lo));
+
+	return _mm_cmpeq_epi8(
+		_mm_min_epu8(x, _mm_set1_epi8((char)(hi - lo))), x);
+}
+
+static inline __m128i blend(__m128i a, __m128i b, __m128i mask)
+{
+	return _mm_or_si128(_mm_andnot_si128(mask, a), _mm_and_si128(mask, b));
+}
+
+size_t tal_u8count_sse2(const unsigned char *p, size_t n,
+			unsigned long long *chars, unsigned long long *lines)
+{
+	const __m128i zero = _mm_setzero_si128();
+	const __m128i nlv = _mm_set1_epi8('\n');
+	const __m128i contmask = _mm_set1_epi8((char)0xC0);
+	const __m128i contbits = _mm_set1_epi8((char)0x80);
+	const __m128i byteBF = _mm_set1_epi8((char)0xBF);
+	unsigned long long ch = 0, nl = 0;
+	size_t rem = n;
+
+	while (rem >= 19) {
+		size_t block = (rem - 3) / 16;
+		__m128i cacc = zero, lacc = zero;
+
+		if (block > 255)
+			block = 255; /* u8 lanes: <= 1 start per lane per iter */
+		rem -= block * 16;
+		do {
+			__m128i v = _mm_loadu_si128(
+				(const __m128i *)(const void *)p);
+			__m128i v1 = _mm_loadu_si128(
+				(const __m128i *)(const void *)(p + 1));
+			__m128i v2 = _mm_loadu_si128(
+				(const __m128i *)(const void *)(p + 2));
+			__m128i v3 = _mm_loadu_si128(
+				(const __m128i *)(const void *)(p + 3));
+			__m128i cont1 = _mm_cmpeq_epi8(
+				_mm_and_si128(v1, contmask), contbits);
+			__m128i cont2 = _mm_cmpeq_epi8(
+				_mm_and_si128(v2, contmask), contbits);
+			__m128i cont3 = _mm_cmpeq_epi8(
+				_mm_and_si128(v3, contmask), contbits);
+			__m128i ascii = _mm_cmpeq_epi8(
+				_mm_and_si128(v, contbits), zero);
+			__m128i ok2 = _mm_and_si128(range_in(v, 0xC2, 0xDF),
+						    cont1);
+			/* second-byte bounds tighten for E0/ED (F0/F4). */
+			__m128i lo3 = blend(
+				contbits, _mm_set1_epi8((char)0xA0),
+				_mm_cmpeq_epi8(v, _mm_set1_epi8((char)0xE0)));
+			__m128i hi3 = blend(
+				byteBF, _mm_set1_epi8((char)0x9F),
+				_mm_cmpeq_epi8(v, _mm_set1_epi8((char)0xED)));
+			__m128i sec3 = _mm_and_si128(
+				_mm_cmpeq_epi8(_mm_max_epu8(v1, lo3), v1),
+				_mm_cmpeq_epi8(_mm_min_epu8(v1, hi3), v1));
+			__m128i ok3 = _mm_and_si128(
+				_mm_and_si128(range_in(v, 0xE0, 0xEF), sec3),
+				cont2);
+			__m128i lo4 = blend(
+				contbits, _mm_set1_epi8((char)0x90),
+				_mm_cmpeq_epi8(v, _mm_set1_epi8((char)0xF0)));
+			__m128i hi4 = blend(
+				byteBF, _mm_set1_epi8((char)0x8F),
+				_mm_cmpeq_epi8(v, _mm_set1_epi8((char)0xF4)));
+			__m128i sec4 = _mm_and_si128(
+				_mm_cmpeq_epi8(_mm_max_epu8(v1, lo4), v1),
+				_mm_cmpeq_epi8(_mm_min_epu8(v1, hi4), v1));
+			__m128i ok4 = _mm_and_si128(
+				_mm_and_si128(range_in(v, 0xF0, 0xF4), sec4),
+				_mm_and_si128(cont2, cont3));
+			__m128i start = _mm_or_si128(
+				_mm_or_si128(ascii, ok2),
+				_mm_or_si128(ok3, ok4));
+
+			cacc = _mm_sub_epi8(cacc, start);
+			lacc = _mm_sub_epi8(lacc, _mm_cmpeq_epi8(v, nlv));
+			p += 16;
+		} while (--block);
+		ch += hsum(cacc);
+		nl += hsum(lacc);
+	}
+	*chars += ch;
+	*lines += nl;
+	return n - rem;
+}
+
 size_t tal_lscan_sse2(const unsigned char *p, size_t n,
 		      unsigned long long *linepos, unsigned long long *maxlen)
 {

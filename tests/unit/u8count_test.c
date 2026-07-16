@@ -62,6 +62,21 @@ static const char *const badshape[] = {
 	"\xe4\xb8",         /* truncated (mid-buffer, next is ascii) */
 };
 
+/* Resync-count oracle over [p, p+n): chars = valid sequence starts, lines =
+ * 0x0A bytes; an incomplete pend at EOF counts nothing (error bytes). */
+static void resync_count(const unsigned char *p, size_t n,
+			 unsigned long long *ch, unsigned long long *nl)
+{
+	struct counts c;
+	struct wstate st;
+
+	memset(&c, 0, sizeof c);
+	wstate_init(&st);
+	tal_u8scalar(p, n, &c, &st);
+	*ch = c.chars;
+	*nl = c.lines;
+}
+
 static void check_u8(const char *name,
 		     size_t (*fn)(const unsigned char *, size_t,
 				  unsigned long long *, unsigned long long *))
@@ -73,8 +88,11 @@ static void check_u8(const char *name,
 	if (!b)
 		return;
 
-	/* Valid corpus at awkward sizes and offsets: full consumption up to
-	 * the hold, and counts equal the strict walker's. */
+	/* Valid corpus at awkward sizes and offsets. The kernel consumes all
+	 * but a bounded lookahead tail, and kernel(prefix) + scalar(suffix)
+	 * must equal the scalar count of the whole slice -- exactly how
+	 * chars_chunk composes them. Offset 3 starts mid-character, which the
+	 * start-counting semantics absorb without special cases. */
 	state = 99;
 	size_t n = fill_valid(b, 65536);
 	static const size_t sizes[] = { 0, 1, 5, 16, 17, 33, 40, 4095, 4097,
@@ -84,28 +102,20 @@ static void check_u8(const char *name,
 		size_t len = sizes[s] < n ? sizes[s] : n;
 
 		for (size_t off = 0; off < 4; off += 3) {
-			unsigned long long kc = 0, kl = 0, wc = 0, wl = 0;
-			unsigned long long d1 = 0, d2 = 0;
+			unsigned long long kc = 0, kl = 0, oc, ol, sc, sl;
 			size_t used = fn(b + off, len, &kc, &kl);
-			/* off=3 starts mid-character: the slice is invalid at
-			 * position 0 and rejection is the CORRECT outcome, so
-			 * the full-consumption property only applies when the
-			 * whole slice walks clean. */
-			int whole_valid =
-				tal_u8walk(b + off, len, &d1, &d2) == 0;
 
 			snprintf(msg, sizeof msg, "%s valid n=%zu off=%zu",
 				 name, len, off);
-			if (whole_valid)
-				CHECK(msg, len - used < 4);
-			CHECK(msg,
-			      tal_u8walk(b + off, used, &wc, &wl) == 0 &&
-			      wc == kc && wl == kl);
+			CHECK(msg, used <= len && len - used < 35);
+			resync_count(b + off + used, len - used, &sc, &sl);
+			resync_count(b + off, len, &oc, &ol);
+			CHECK(msg, kc + sc == oc && kl + sl == ol);
 		}
 	}
 
-	/* Each invalid shape, injected mid-corpus: the kernel must stop at or
-	 * before the bad span and its consumed prefix must stay walker-equal. */
+	/* Each invalid shape, injected mid-corpus: no rejection anymore -- the
+	 * kernel counts straight through and composition must still hold. */
 	for (size_t k = 0; k < sizeof badshape / sizeof badshape[0]; k++) {
 		size_t pos = 1000 + 17 * k;
 		size_t blen = strlen(badshape[k]);
@@ -114,14 +124,33 @@ static void check_u8(const char *name,
 		memcpy(save, b + pos, blen);
 		memcpy(b + pos, badshape[k], blen);
 
-		unsigned long long kc = 0, kl = 0, wc = 0, wl = 0;
+		unsigned long long kc = 0, kl = 0, oc, ol, sc, sl;
 		size_t used = fn(b, 20000, &kc, &kl);
 
 		snprintf(msg, sizeof msg, "%s bad[%zu]", name, k);
-		CHECK(msg, used <= pos + blen);
-		CHECK(msg, tal_u8walk(b, used, &wc, &wl) == 0 && wc == kc &&
-			   wl == kl);
+		CHECK(msg, used <= 20000 && 20000 - used < 35);
+		resync_count(b + used, 20000 - used, &sc, &sl);
+		resync_count(b, 20000, &oc, &ol);
+		CHECK(msg, kc + sc == oc && kl + sl == ol);
 		memcpy(b + pos, save, blen);
+	}
+
+	/* Random binary, the P3 workload: dense invalid bytes, all consumed. */
+	for (size_t i = 0; i < 65536; i += 8) {
+		unsigned long long r = next64();
+
+		memcpy(b + i, &r, 8);
+	}
+	for (int t = 0; t < 8; t++) {
+		size_t len = 4096 + (size_t)(next64() % 60000);
+		unsigned long long kc = 0, kl = 0, oc, ol, sc, sl;
+		size_t used = fn(b, len, &kc, &kl);
+
+		snprintf(msg, sizeof msg, "%s binary n=%zu", name, len);
+		CHECK(msg, used <= len && len - used < 35);
+		resync_count(b + used, len - used, &sc, &sl);
+		resync_count(b, len, &oc, &ol);
+		CHECK(msg, kc + sc == oc && kl + sl == ol);
 	}
 	free(b);
 }
@@ -149,6 +178,9 @@ int main(void)
 		CHECK("walk rejects", tal_u8walk(tmp, l + 1, &ch, &nl) == -1);
 	}
 
+#if TAL_HAS_SSE2 && defined(__SSE2__)
+	check_u8("sse2", tal_u8count_sse2);
+#endif
 #if TAL_HAS_AVX2
 	if (tal_cpu_has_avx2())
 		check_u8("avx2", tal_u8count_avx2);
