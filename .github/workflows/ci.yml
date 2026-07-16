@@ -42,15 +42,6 @@ jobs:
         # Shared runners jitter the mean; gate on best-of-N min with a 3% band
         # (audit 03 gate policy). Inactive until PARITY_ACTIVE either way.
         run: TAL_PERF_METRIC=min TAL_PERF_MARGIN=0.97 TAL_BENCH_BYTES=50000000 make bench
-      - name: mmap diag (temporary)
-        # Informational 3-way for the -l VM gap: mmap on vs off vs ref.
-        # Feeds the P1-on-Azure question; remove once answered.
-        if: runner.os == 'Linux'
-        run: |
-          env LC_ALL=C.UTF-8 hyperfine -N -w 3 -m 20 --style basic \
-            "./tally -l bench/.work/corpus/big-ascii" \
-            "env TAL_MMAP_MIN=9999999999999 ./tally -l bench/.work/corpus/big-ascii" \
-            "tests/.work/ref/wc-9.11 -l bench/.work/corpus/big-ascii" || true
 
   freebsd:
     runs-on: ubuntu-latest
