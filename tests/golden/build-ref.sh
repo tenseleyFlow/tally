@@ -21,11 +21,14 @@ if [ -f ".docs/refs/coreutils/src/wc.c" ]; then
 	srcdir=".docs/refs/coreutils"
 	# A git checkout of this tree (CI, fresh clones) scrambles mtimes and
 	# can leave configure.ac "newer" than its outputs — automake then wants
-	# aclocal-1.18 and dies (maintainer-mode regen). Touch the generated
-	# files so they postdate their sources; content stays pristine.
-	find "$srcdir" -name aclocal.m4 -o -name configure \
-		-o -name config.hin -o -name Makefile.in \
-		| xargs touch 2>/dev/null || true
+	# aclocal-1.18/automake-1.18 and dies (maintainer-mode regen). Touch
+	# the generated files in dependency order (aclocal.m4 strictly first:
+	# it is a prerequisite of the rest, and one unordered xargs batch left
+	# Makefile.in older than aclocal.m4). Content stays pristine.
+	touch "$srcdir/aclocal.m4" 2>/dev/null || true
+	sleep 1 # strict ordering on 1s-granularity filesystems
+	find "$srcdir" -name configure -o -name config.hin \
+		-o -name Makefile.in | xargs touch 2>/dev/null || true
 else
 	srcdir="tests/.work/coreutils-$TAG"
 	if [ ! -f "$srcdir/src/wc.c" ]; then
