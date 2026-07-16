@@ -50,20 +50,30 @@ fi
 # root); harmless otherwise.
 absrc=$(cd "$srcdir" && pwd)
 bld="$OUT/build-$TAG"
-mkdir -p "$bld"
 njobs=$( (sysctl -n hw.ncpu || nproc || echo 4) 2>/dev/null | head -1 )
 MAKE=make
 command -v gmake >/dev/null 2>&1 && MAKE=gmake
-( cd "$bld" \
-	&& { [ -x config.status ] || FORCE_UNSAFE_CONFIGURE=1 "$absrc/configure" \
-		--disable-nls --quiet ${CC:+CC="$CC"} >configure.log 2>&1; } \
-	&& { "$MAKE" -s -j"$njobs" src/wc >build.log 2>&1 \
-	     || "$MAKE" -s -j"$njobs" >>build.log 2>&1 \
-	     || "$MAKE" -s -j"$njobs" src/wc >>build.log 2>&1; } ) || {
-	echo "build-ref: coreutils build failed; tail of logs:" >&2
-	tail -5 "$bld/configure.log" >&2 2>&1 || echo "  (no configure.log)" >&2
-	tail -20 "$bld/build.log" >&2 2>&1 || echo "  (no build.log)" >&2
-	exit 1
+build_ref() {
+	mkdir -p "$bld"
+	( cd "$bld" \
+		&& { [ -x config.status ] || FORCE_UNSAFE_CONFIGURE=1 "$absrc/configure" \
+			--disable-nls --quiet ${CC:+CC="$CC"} >configure.log 2>&1; } \
+		&& { "$MAKE" -s -j"$njobs" src/wc >build.log 2>&1 \
+		     || "$MAKE" -s -j"$njobs" >>build.log 2>&1 \
+		     || "$MAKE" -s -j"$njobs" src/wc >>build.log 2>&1; } )
+}
+# A cached build dir can hold a config.status from an older OS image whose
+# gnulib decisions no longer match the libc (CI VM caches: undefined
+# rpl_mbrtoc32, 2026-07-16). One clean-slate retry heals that class.
+build_ref || {
+	echo "build-ref: build failed; retrying from a clean build dir" >&2
+	rm -rf "$bld"
+	build_ref || {
+		echo "build-ref: coreutils build failed; tail of logs:" >&2
+		tail -5 "$bld/configure.log" >&2 2>&1 || echo "  (no configure.log)" >&2
+		tail -20 "$bld/build.log" >&2 2>&1 || echo "  (no build.log)" >&2
+		exit 1
+	}
 }
 cp "$bld/src/wc" "$bin"
 
