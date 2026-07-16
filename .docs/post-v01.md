@@ -67,7 +67,20 @@ bottleneck everywhere. Batch decode via the u8 validator + width-class lookup on
 points (the BMP table already exists) could reach ~4-6x on the slow-ref platforms and a
 real win on glibc. Width is inherently per-character — don't chase ASCII-class multiples.
 
-## P5 — threading, -l slice LANDED 2026-07-16 (opt-in); -w/-m remain
+## P5 — threading LANDED 2026-07-16 (opt-in, both slices)
+
+Slice 2 (general counting): contiguous spans joined only where the previous byte is
+ASCII — all multibyte machinery is bytes >= 0x80, so no separator match or sequence can
+span a join, in_word seeds from one byte, and mid-span pends are impossible. Workers run
+the untouched serial chunk functions; merge is summation. -L and scalar_mode stay serial.
+dorado 4T: default 30->14 ms (31x vs ref), -m utf8 45->16 ms (155x vs ref); hasu 35x/47x.
+The threaded-vs-serial diff EXPOSED A SERIAL PARITY BUG: words-pass oracle windows counted
+chars into the words counts struct, so -wm combos overcounted chars vs GNU (+123 on
+big-binary; needs a multibyte char resolved in a window at a 256 KiB chunk straddle —
+single-chunk fixtures never tripped it). Fixed with tal_wwalk (words+lines-only stepper);
+golden gained -wm cases over the straddle; the fuzzer now threads tally 1-in-4 via env.
+
+## P5 (original notes, -l slice) — threading (opt-in); -w/-m remain
 
 --tally-threads=N / TAL_THREADS (exact-match extension flags, outside the GNU abbreviation
 table so --t still means --total). Interleaved pread stripes, sum merge, regular files

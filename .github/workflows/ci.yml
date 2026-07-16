@@ -59,7 +59,7 @@ jobs:
             ./configure
             gmake CFLAGS="-O2 -Werror"
             gmake test
-            TAL_PERF_METRIC=min TAL_PERF_MARGIN=0.95 TAL_BENCH_BYTES=20000000 gmake bench || true  # VM timing too noisy to gate
+            TAL_VM_RUNNER=1 TAL_PERF_METRIC=min TAL_PERF_MARGIN=0.95 TAL_BENCH_BYTES=20000000 gmake bench || true  # VM timing too noisy to gate
 
   musl:
     runs-on: ubuntu-latest
