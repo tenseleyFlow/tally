@@ -41,7 +41,7 @@ jobs:
       - name: bench
         # Shared runners jitter the mean; gate on best-of-N min with a 3% band
         # (audit 03 gate policy). Inactive until PARITY_ACTIVE either way.
-        run: TAL_PERF_METRIC=min TAL_PERF_MARGIN=0.97 TAL_BENCH_BYTES=50000000 make bench
+        run: TAL_VM_RUNNER=1 TAL_PERF_METRIC=min TAL_PERF_MARGIN=0.97 TAL_BENCH_BYTES=50000000 make bench
 
   freebsd:
     runs-on: ubuntu-latest

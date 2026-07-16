@@ -63,7 +63,16 @@ bench_one() {
 			_metric=mean
 		fi
 	fi
-	if [ "$_margin" != - ]; then
+	if [ "$_margin" = vm-info ]; then
+		# Gate on real hardware; report-only on ephemeral VM runners
+		# (TAL_VM_RUNNER=1 in CI): three runs measured identical code
+		# at 0.64x/0.88x/1.21x vs the ref purely by runner draw.
+		if [ -n "${TAL_VM_RUNNER:-}" ]; then
+			sh bench/gate.sh "$_csv" "$_metric" "$_lbl (info)" || true
+		else
+			TAL_PERF_MARGIN=0.97 sh bench/gate.sh "$_csv" "$_metric" "$_lbl" || rc=1
+		fi
+	elif [ "$_margin" != - ]; then
 		TAL_PERF_MARGIN=$_margin sh bench/gate.sh "$_csv" "$_metric" "$_lbl" || rc=1
 	else
 		sh bench/gate.sh "$_csv" "$_metric" "$_lbl" || rc=1
@@ -131,16 +140,15 @@ bench_one lwmcL_big_ascii auto - -lwmcL "$corpus/big-ascii"
 # tiny-many (sprint 04): 10k files through the multi-file loop — per-file
 # dispatch, estimator stats, and open/close costs dominate.
 bench_one tiny_many auto - --files0-from="$corpus/tiny.list"
-# The -l cells are read()-bound ties against GNU's SIMD (audit 03 risk 1): a
-# 1.00 margin on min still coin-flips on ~2% run-to-run jitter (observed both
-# directions on dorado). Real hardware measures >= 1.0 everywhere (dorado
-# 1.01-1.05, hasu 1.15-1.36, nomad-1 2.0-7.7). The shared-VM fleet does not:
-# GitHub's mixed Ice Lake / AMD Milan runners measure 0.87-0.92 on 50 MB
-# DRAM-speed cells (2026-07-16), Milan with BOTH tools on AVX2 -- VM physics,
-# not kernel quality (the avx512 tier covers the Ice Lake half). 0.85 admits
-# the fleet; a sprint-01-class 16% kernel regression still fails everywhere.
-bench_one l_big_ascii min 0.85 -l "$corpus/big-ascii"
-bench_one l_newline_dense min 0.85 -l "$corpus/newline-dense"
-bench_one l_long_lines min 0.85 -l "$corpus/long-lines"
+# The -l cells are read()-bound near-ties against GNU's SIMD (audit 03 risk
+# 1). Real hardware gates hard at 0.97 and measures >= 1.0 everywhere (dorado
+# 1.01-1.05, hasu 1.15-1.36, nomad-1 2.0-7.7, all with the avx512 tier where
+# the CPU has it). GitHub's shared-VM fleet is not a measurand: mixed Ice
+# Lake / Milan runners scored identical code 0.64x, 0.88x, and 1.21x on
+# consecutive runs (2026-07-16) -- so VM runners report these cells without
+# gating, and dorado/hasu/nomad-1 keep the hard coverage.
+bench_one l_big_ascii min vm-info -l "$corpus/big-ascii"
+bench_one l_newline_dense min vm-info -l "$corpus/newline-dense"
+bench_one l_long_lines min vm-info -l "$corpus/long-lines"
 
 exit $rc
