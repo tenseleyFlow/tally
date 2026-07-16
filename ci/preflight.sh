@@ -6,7 +6,7 @@
 # rejects POSIX grouping if ssh hands it the command string directly.
 set -u
 
-HOSTS=${1:-"hasu nomad"}
+HOSTS=${1:-"hasu nomad-1"}
 USER=${TAL_REMOTE_USER:-mfwolffe}
 REMOTE_DIR='.tally-preflight' # relative to $HOME on the remote
 
