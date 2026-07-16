@@ -19,6 +19,13 @@ mkdir -p "$OUT"
 srcdir=""
 if [ -f ".docs/refs/coreutils/src/wc.c" ]; then
 	srcdir=".docs/refs/coreutils"
+	# A git checkout of this tree (CI, fresh clones) scrambles mtimes and
+	# can leave configure.ac "newer" than its outputs — automake then wants
+	# aclocal-1.18 and dies (maintainer-mode regen). Touch the generated
+	# files so they postdate their sources; content stays pristine.
+	find "$srcdir" -name aclocal.m4 -o -name configure \
+		-o -name config.hin -o -name Makefile.in \
+		| xargs touch 2>/dev/null || true
 else
 	srcdir="tests/.work/coreutils-$TAG"
 	if [ ! -f "$srcdir/src/wc.c" ]; then
