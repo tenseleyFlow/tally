@@ -33,8 +33,8 @@ Apple Silicon.
 | `wc FILE` (Cyrillic/CJK) | 123x | 73x |
 | `wc FILE` (smart-quote prose) | 15x | 5.7x |
 | `wc FILE` (binary) | 39x | 27x |
-| `-m` (UTF-8) | 51x | 47x |
-| `-m` (binary) | 60x | 44x |
+| `-m` (UTF-8) | 117x | 47x |
+| `-m` (binary) | 99x | 44x |
 | `-L` (ASCII) | 10x | 5.2x |
 | `-L` (UTF-8) | 5.5x | 4.2x |
 | `-l` (big file) | 1.0x (read-bound tie) | 2.8-6.1x |
