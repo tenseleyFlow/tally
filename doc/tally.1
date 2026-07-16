@@ -58,6 +58,19 @@ display help and exit
 .TP
 .B \-\-version
 output version information and exit
+.SH EXTENSIONS
+Flags outside GNU wc's surface live under the
+.B \-\-tally\-*
+namespace and never change default behavior.
+.TP
+.B \-\-tally\-threads=\fIN\fR
+count large regular files with
+.I N
+parallel readers (\fBauto\fR selects one per online CPU, capped at 8).
+Applies to line counting; other inputs and modes fall back to the serial
+path. Output is byte-identical to a serial run. The
+.B TAL_THREADS
+environment variable sets the same value; the flag wins.
 .SH LOCALES
 Word separators and character counts follow the current locale exactly as
 GNU wc does: the libc's

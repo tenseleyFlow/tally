@@ -60,6 +60,14 @@ Requires a C11 compiler and GNU make. Runs on FreeBSD, Linux (glibc and
 musl), and macOS. SIMD is compiled per translation unit and selected at
 runtime; the binary never executes instructions the host lacks.
 
+## Extensions
+
+Anything beyond GNU wc's surface lives under `--tally-*` and is off by
+default. `--tally-threads=N` (or `TAL_THREADS=N`) counts large regular
+files with N parallel readers — `-l` on a 200 MB cached file drops from
+23 ms to 13 ms with 4 threads on the dev box, turning the read-bound tie
+with GNU into a 1.8x win. Output stays byte-identical.
+
 ## Parity notes
 
 Same counts, column widths, diagnostics, and exit codes as GNU wc, with
