@@ -104,10 +104,15 @@ cat "$corpus"/big-* "$corpus"/newline-dense "$corpus"/long-lines >/dev/null 2>&1
 # c_big_ascii is the fstat zero-read path: pure process startup. On macOS,
 # tally --version == an empty C program at the posix_spawn floor while the
 # ref sits ~0.2ms under it, and shared VMs jitter the floor (CI measured
-# 0.69x once, just under a 0.70 margin) — Darwin gates loose; FreeBSD/Linux
-# carry the tight coverage.
+# 0.69x once, just under a 0.70 margin) — Darwin gates loose. FreeBSD pays
+# ~50us of libthr load for the threads extension (v0.2.0: 0.87x measured;
+# Linux folds pthreads into libc, macOS always loads it) — encoded here,
+# not papered: Linux carries the tight startup coverage.
 cmarg=0.90
-[ "$(uname -s)" = Darwin ] && cmarg=0.60
+case "$(uname -s)" in
+Darwin)  cmarg=0.60 ;;
+FreeBSD) cmarg=0.80 ;;
+esac
 bench_one c_big_ascii min "$cmarg" -c "$corpus/big-ascii"
 # The flagship (sprint 02): default invocation and -w, where the fused kernel
 # meets GNU's scalar word loop. Typography (E2-dense) and binary (random
