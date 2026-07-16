@@ -154,5 +154,9 @@ bench_one l_long_lines min vm-info -l "$corpus/long-lines"
 # env prefix reaches tally only (wc ignores TAL_THREADS). dorado: the -l tie
 # becomes 1.84x; VM runners report-only like the other -l cells.
 TAL_BENCH_PREFIX="env TAL_THREADS=4 " bench_one l_mt4_big_ascii min vm-info -l "$corpus/big-ascii"
+# Threaded general counting (P5 slice 2): words and chars fan out too.
+# dorado: default 30->14 ms, -m utf8 45->16 ms with 4 workers.
+TAL_BENCH_PREFIX="env TAL_THREADS=4 " bench_one default_mt4_big_ascii auto - "$corpus/big-ascii"
+TAL_BENCH_PREFIX="env TAL_THREADS=4 " bench_one m_mt4_big_utf8 auto - -m "$corpus/big-utf8"
 
 exit $rc

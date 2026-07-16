@@ -30,8 +30,20 @@ struct mt_job {
 	int err;
 };
 
+long tal_mt_min(void)
+{
+	static long minbytes = -1;
+
+	if (minbytes < 0) {
+		const char *e = getenv("TAL_MT_MIN");
+
+		minbytes = (e && *e) ? atol(e) : 8L * 1024 * 1024;
+	}
+	return minbytes;
+}
+
 /* pread the whole request unless EOF or error; EINTR retries. */
-static ssize_t pread_full(int fd, unsigned char *buf, size_t want, off_t off)
+ssize_t tal_pread_full(int fd, unsigned char *buf, size_t want, off_t off)
 {
 	size_t got = 0;
 
@@ -66,7 +78,7 @@ static void *mt_worker(void *v)
 
 		if (off + (off_t)want > j->len)
 			want = (size_t)(j->len - off);
-		ssize_t got = pread_full(j->fd, buf, want, j->start + off);
+		ssize_t got = tal_pread_full(j->fd, buf, want, j->start + off);
 
 		if (got < 0) {
 			j->err = errno;
@@ -86,14 +98,9 @@ static void *mt_worker(void *v)
 int tal_count_lines_mt(int fd, int nthreads, tal_nl_fn nl,
 		       unsigned long long *lines, unsigned long long *bytes)
 {
-	static long minbytes = -1;
+	long minbytes = tal_mt_min();
 	struct stat st;
 
-	if (minbytes < 0) {
-		const char *e = getenv("TAL_MT_MIN");
-
-		minbytes = (e && *e) ? atol(e) : 8L * 1024 * 1024;
-	}
 	if (nthreads < 2 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode))
 		return -1;
 
@@ -152,6 +159,28 @@ int tal_count_lines_mt(int fd, int nthreads, tal_nl_fn nl,
 	return err;
 }
 
+/* Generic fan-out: run fn(job_i) on njobs threads (job 0 inline when spawn
+ * fails so work always completes). Returns the number that ran. */
+int tal_mt_run(int njobs, void *(*fn)(void *), void *jobs, size_t jobsz)
+{
+	pthread_t tids[256];
+	int spawned = 0;
+
+	if (njobs > 256)
+		njobs = 256;
+	for (int t = 0; t < njobs; t++) {
+		if (pthread_create(&tids[t], NULL, fn,
+				   (char *)jobs + (size_t)t * jobsz) != 0)
+			break;
+		spawned++;
+	}
+	for (int t = spawned; t < njobs; t++)
+		fn((char *)jobs + (size_t)t * jobsz);
+	for (int t = 0; t < spawned; t++)
+		pthread_join(tids[t], NULL);
+	return njobs;
+}
+
 #else
 
 int tal_count_lines_mt(int fd, int nthreads, tal_nl_fn nl,
@@ -159,6 +188,12 @@ int tal_count_lines_mt(int fd, int nthreads, tal_nl_fn nl,
 {
 	(void)fd; (void)nthreads; (void)nl; (void)lines; (void)bytes;
 	return -1;
+}
+
+int tal_mt_run(int njobs, void *(*fn)(void *), void *jobs, size_t jobsz)
+{
+	(void)fn; (void)jobs; (void)jobsz; (void)njobs;
+	return 0;
 }
 
 #endif /* TAL_HAS_PTHREAD */

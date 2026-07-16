@@ -74,6 +74,10 @@ while [ "$i" -lt "$N" ]; do
 	[ "$(rnd 4)" = 0 ] && pc="POSIXLY_CORRECT=1"
 	mm=""
 	[ "$(rnd 3)" = 0 ] && mm="TAL_MMAP_MIN=1"
+	# Threaded path 1-in-4 (tally-only env; the ref ignores it): parity
+	# must hold for any worker count and join placement.
+	mt=""
+	[ "$(rnd 4)" = 0 ] && mt="TAL_THREADS=$(( $(rnd 3) + 2 )) TAL_MT_MIN=1"
 	# Sizes biased toward the 256 KiB buffer boundary.
 	case $(rnd 4) in
 	0) size=$(( $(rnd 4096) )) ;;
@@ -95,7 +99,7 @@ while [ "$i" -lt "$N" ]; do
 	fi
 
 	# shellcheck disable=SC2086
-	env $pc $mm LC_ALL=$loc "$TALLY" $flags $fargs >"$work/a.out" 2>"$work/a.err"; ra=$?
+	env $pc $mm $mt LC_ALL=$loc "$TALLY" $flags $fargs >"$work/a.out" 2>"$work/a.err"; ra=$?
 	# shellcheck disable=SC2086
 	env $pc LC_ALL=$loc "$ref"   $flags $fargs >"$work/b.out" 2>"$work/b.err"; rb=$?
 	# Normalize: counts lines end in the (differing) file path's basename only
