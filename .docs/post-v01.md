@@ -99,7 +99,22 @@ fastlwc measured ~3x on top of single-thread. Ship order: -l/-c, then -w/-m, -L 
 demanded. Opt-in first (--tally-threads=N per overview §13 extension namespace), default-on
 only after pipes/ordering semantics prove clean on all boxes.
 
-## P6 — AVX-512 tier (-l slice LANDED 2026-07-16; lwc/u8 kernels remain)
+## P6 — AVX-512 tier: -l and -m kernels LANDED 2026-07-16; lwc deliberately open
+
+The u8 (-m) kernel joined the nl kernel in the avx512 TU: mask compares put valid-start
+positions straight into a __mmask64 and popcnt accumulates in scalar registers — the
+whole u8-lane accumulator scheme disappears. 1.54-1.60x over the AVX2 kernel even on
+double-pumped Zen (dorado): -m utf8 ~80x, binary ~96x vs ref. The fused lwc kernel stays
+AVX2 on purpose: its L1 carry masks would need the valignr/permutex2var redesign, and the
+default cell's bound has moved — mmap (P1) and threading (P5) own the wall clock now.
+Revisit only if a profile on real hardware shows the AVX2 lwc kernel as the bound.
+
+## P7 — buffer sweep: measured 2026-07-16, 256 KiB stays
+
+256/512/1024 KiB identical on the default cell; -l differences within noise (1.02x the
+WRONG way at 30 runs). TAL_IO_BUFSIZE is now #ifndef-guarded for future experiments.
+
+## P6 (superseded notes) — AVX-512 tier
 
 The -l kernel shipped early to close a red CI leg: mask compares + scalar popcnt, own TU
 with -mavx512f/-mavx512bw, runtime-gated. Ice Lake runners flipped 0.91x -> 1.09-1.21x;
@@ -115,7 +130,7 @@ user-time on the default cells (~9-11 ms of 20 on the dev box). Needs a new TU +
 runtime gate (avx512f+avx512bw) + the vperm2i128 idioms replaced with valignr/permutex2var
 (fastlwc shows the shapes). Do after P1 — mmap changes what's bound.
 
-## P7 — buffer-size sweep (audit 03 headroom 4, never finished)
+## P7 (superseded notes) — buffer-size sweep (audit 03 headroom 4)
 
 256 KiB matches GNU; 512 KiB/1 MiB were never seriously measured. One bench afternoon;
 keep 256 KiB absent a >3% win. Likely moot after P1.
