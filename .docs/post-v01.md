@@ -50,7 +50,15 @@ too (no pshufb needed), so baseline x86-64 no longer drops to scalar. Measured o
 binary -m 1.5x -> 60.2x, utf8 -m 39x -> 51x, lm 53x. Unit oracle changed contract: kernel
 prefix + scalar suffix must equal the scalar whole (compositional, matches chars_chunk).
 
-## P4 — utf8 -L deepening (sprint 03 landed-note)
+## P4 — utf8 -L deepening — LANDED 2026-07-16, target hit
+
+tal_lwalk: width-only walker (classify width rules + oracle pend carry, no word/char
+machinery) replaces the full oracle inside the -L special windows for utf8 locales.
+Same shape as P3's tal_u8scalar win. Measured: dorado 1.72x -> 5.53x, glibc/hasu
+0.97x TIE -> 1.36x, macOS 1.43x -> 4.23x. The 0.90 near-tie margin on L_big_utf8 is
+retired (auto). Batch/vector decode was not needed to hit the 4-6x projection.
+
+## P4 (original notes) — utf8 -L deepening (sprint 03 landed-note)
 
 Platform-dependent today: 1.8x FreeBSD, 1.4x macOS, ~0.97x on glibc — glibc's c32width is
 fast enough that the cell is a genuine TIE there (caught by ubuntu CI 2026-07-06; the cell
@@ -59,7 +67,17 @@ bottleneck everywhere. Batch decode via the u8 validator + width-class lookup on
 points (the BMP table already exists) could reach ~4-6x on the slow-ref platforms and a
 real win on glibc. Width is inherently per-character — don't chase ASCII-class multiples.
 
-## P5 — threading (audit 03 headroom 7, fastlwc-mt pattern)
+## P5 — threading, -l slice LANDED 2026-07-16 (opt-in); -w/-m remain
+
+--tally-threads=N / TAL_THREADS (exact-match extension flags, outside the GNU abbreviation
+table so --t still means --total). Interleaved pread stripes, sum merge, regular files
+>= 8 MiB (TAL_MT_MIN), serial fallback everywhere else, offset semantics mirror mmap.
+dorado -l: 23.4 -> 13.1 ms with 4 threads — the read-bound tie becomes 1.84x. auto caps
+at 8 (16 threads measured SLOWER than 4 on ZFS: I/O saturates before cores). Golden
+check_threads diffs threaded vs serial output; l_mt4_big_ascii gates it. Next slices:
+-w/-m need the 2-byte lookback seeding below; -L stitching only if demanded.
+
+## P5 (original notes) — threading (audit 03 headroom 7, fastlwc-mt pattern)
 
 pread over interleaved blocks, one lookback byte seeds in_word per block; L1 suspect holds
 need a 2-byte lookback rule at joins. Merge is trivial for -l/-c, mechanical for -w/-m,
@@ -68,7 +86,14 @@ fastlwc measured ~3x on top of single-thread. Ship order: -l/-c, then -w/-m, -L 
 demanded. Opt-in first (--tally-threads=N per overview §13 extension namespace), default-on
 only after pipes/ordering semantics prove clean on all boxes.
 
-## P6 — AVX-512 tier (overview non-goal, now unblocked; priority raised)
+## P6 — AVX-512 tier (-l slice LANDED 2026-07-16; lwc/u8 kernels remain)
+
+The -l kernel shipped early to close a red CI leg: mask compares + scalar popcnt, own TU
+with -mavx512f/-mavx512bw, runtime-gated. Ice Lake runners flipped 0.91x -> 1.09-1.21x;
+dorado (Zen, read-bound) stays a 1.02x tie. The mmap diag on the same runners confirmed
+P1: mmap on 6.1ms / off 7.2ms / ref 7.3ms. Remaining: the fused lwc and u8 kernels below.
+
+## P6 (original notes) — AVX-512 tier (overview non-goal, now unblocked; priority raised)
 
 GNU's -l uses it (9.9+); our AVX2 ties read-bound. Ice Lake CI runners measure the gap
 directly: 0.91-0.92x on the -l cells (ubuntu, 2026-07-16), so those margins sit at 0.90
