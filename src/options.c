@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "options.h"
 #include "util.h"
@@ -61,6 +62,10 @@ static void usage_ok(void)
 	       "                           WHEN can be: auto, always, only, never\n"
 	       "      --help             display this help and exit\n"
 	       "      --version          output version information and exit\n"
+	       "\n"
+	       "tally extensions (not in GNU wc):\n"
+	       "      --tally-threads=N  count large regular files with N threads;\n"
+	       "                           N can be: auto (one per online CPU)\n"
 	       "\n"
 	       "tally is a drop-in reimplementation of GNU wc(1).\n");
 	exit(0);
@@ -155,11 +160,56 @@ static void dispatch(struct options *o, const char *argv0, int code, const char 
 	}
 }
 
+/* --tally-* extensions match EXACTLY and are resolved before the GNU table:
+ * abbreviation must keep resolving as GNU wc's own table does (--t is
+ * --total there; a new table entry would make it ambiguous). */
+static int tal_parse_threads(const char *argv0, const char *val)
+{
+	if (strcmp(val, "auto") == 0) {
+		/* I/O saturates well before core count: 16 threads measured
+		 * SLOWER than 4 on ZFS (173ms sys vs 46ms). Cap the default. */
+		long n = sysconf(_SC_NPROCESSORS_ONLN);
+
+		return n > 1 ? (n < 8 ? (int)n : 8) : 1;
+	}
+	char *end;
+	long n = strtol(val, &end, 10);
+
+	if (*val && !*end && n >= 1 && n <= 256)
+		return (int)n;
+	fprintf(stderr, "%s: invalid thread count %s%s%s\n",
+		argv0 ? argv0 : tal_prog, tal_qs(), val, tal_qe());
+	if (argv0)
+		try_help(argv0);
+	exit(1);
+}
+
 /* Returns the (possibly advanced) argv index. */
 static int parse_long(struct options *o, int argc, char **argv, int i)
 {
 	const char *argv0 = argv[0];
 	const char *arg = argv[i] + 2; /* past "--" */
+
+	if (strncmp(arg, "tally-", 6) == 0) {
+		const char *teq = strchr(arg, '=');
+		size_t tlen = teq ? (size_t)(teq - arg) : strlen(arg);
+
+		if (tlen == 13 && strncmp(arg, "tally-threads", 13) == 0) {
+			const char *val = teq ? teq + 1 : argv[++i];
+
+			if (!val) {
+				fprintf(stderr,
+					"%s: option '--tally-threads' requires an argument\n",
+					argv0);
+				try_help(argv0);
+			}
+			o->threads = tal_parse_threads(argv0, val);
+			return i;
+		}
+		fprintf(stderr, "%s: unrecognized option '%s'\n", argv0,
+			argv[i]);
+		try_help(argv0);
+	}
 	const char *eq = strchr(arg, '=');
 	size_t namelen = eq ? (size_t)(eq - arg) : strlen(arg);
 	const struct longopt *hit = NULL;
@@ -219,6 +269,13 @@ void options_parse(struct options *o, int argc, char **argv)
 
 	memset(o, 0, sizeof *o);
 	o->total = TOTAL_AUTO;
+	o->threads = 1;
+	{
+		const char *e = getenv("TAL_THREADS");
+
+		if (e && *e)
+			o->threads = tal_parse_threads(NULL, e);
+	}
 	o->files = xmalloc((size_t)(argc > 1 ? argc : 1) * sizeof *o->files);
 
 	for (int i = 1; i < argc; i++) {

@@ -37,7 +37,9 @@ if [ "$(locale charmap 2>/dev/null)" != "UTF-8" ]; then
 	done
 fi
 
-CFLAGS_T="-std=c11 -g -O1 $san $CONF_CFLAGS -Isrc -I. -D_FILE_OFFSET_BITS=64"
+PTHREAD_FLAGS=""
+[ -f config.mk ] && PTHREAD_FLAGS=$(sed -n 's/^PTHREAD_FLAGS = //p' config.mk)
+CFLAGS_T="-std=c11 -g -O1 $san $CONF_CFLAGS $PTHREAD_FLAGS -Isrc -I. -D_FILE_OFFSET_BITS=64"
 
 # Library objects = all src/*.c and src/sys/*.c except main.c (tests provide
 # main). Compiled per-TU because ISA flags apply to single files only — a

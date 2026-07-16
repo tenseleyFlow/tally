@@ -69,6 +69,12 @@ WCHAR_IS_UTF32=$(try_compile wchar32 '
 #include <wchar.h>
 int main(void){ _Static_assert(sizeof(wchar_t)==4, "w"); return 0; }' '')
 
+HAS_PTHREAD=$(try_compile pthread '
+#include <pthread.h>
+static void *f(void *p){ return p; }
+int main(void){ pthread_t t; pthread_create(&t, 0, f, 0);
+	pthread_join(t, 0); return 0; }' '-pthread')
+
 HAS_POSIX_FADVISE=$(try_compile fadvise '
 #include <fcntl.h>
 int main(void){ return posix_fadvise(0, 0, 0, POSIX_FADV_SEQUENTIAL); }' "$CONF_CFLAGS")
@@ -95,6 +101,7 @@ cat > config.h <<EOF
 #define TAL_HAS_MBRTOC32       $HAS_MBRTOC32
 #define TAL_WCHAR_IS_UTF32     $WCHAR_IS_UTF32
 #define TAL_HAS_POSIX_FADVISE  $HAS_POSIX_FADVISE
+#define TAL_HAS_PTHREAD        $HAS_PTHREAD
 #endif
 EOF
 
@@ -105,6 +112,7 @@ PREFIX = $PREFIX
 CONF_CFLAGS = $CONF_CFLAGS
 AVX2_CFLAGS = $AVX2_CFLAGS
 AVX512_CFLAGS = $AVX512_CFLAGS
+PTHREAD_FLAGS = $([ "$HAS_PTHREAD" = 1 ] && echo '-pthread')
 EOF
 
 echo "configure: sse2=$HAS_SSE2 avx2=$HAS_AVX2(compile) cpu_supports=$HAS_CPU_SUPPORTS neon=$HAS_NEON"

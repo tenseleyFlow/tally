@@ -27,7 +27,7 @@ STD      = -std=c11
 # OPT is the optimization level; release/debug override it cleanly. CFLAGS stays
 # free for user-appended flags.
 OPT     ?= -O2
-ALL_CFLAGS = $(STD) $(WARN) $(OPT) $(CFLAGS) $(CONF_CFLAGS) -Isrc -I. -D_FILE_OFFSET_BITS=64
+ALL_CFLAGS = $(STD) $(WARN) $(OPT) $(CFLAGS) $(CONF_CFLAGS) $(PTHREAD_FLAGS) -Isrc -I. -D_FILE_OFFSET_BITS=64
 
 # Explicit source list — a stray .c in src/ is a deliberate add, not a silent
 # one. Keep sorted; tests/run.sh asserts this list matches the filesystem.
@@ -40,6 +40,7 @@ SRC = \
 	src/scalar.c \
 	src/simd_avx2.c \
 	src/simd_avx512.c \
+	src/mt.c \
 	src/simd_neon.c \
 	src/simd_sse2.c \
 	src/util.c \

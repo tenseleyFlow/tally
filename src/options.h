@@ -14,6 +14,7 @@ enum tal_total {
 struct options {
 	bool lines, words, chars, bytes, linelength;
 	bool debug;
+	int threads; /* --tally-threads=N / TAL_THREADS; 1 = off (default) */
 	const char *files_from; /* --files0-from=F, or NULL */
 	enum tal_total total;
 	char **files;  /* operands in command-line order (pointers into argv) */

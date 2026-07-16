@@ -9,6 +9,7 @@
 #include "config.h"
 #include "count.h"
 #include "io.h"
+#include "mt.h"
 #include "simd.h"
 #include "sys/detect.h"
 #include "util.h"
@@ -151,6 +152,17 @@ static int count_lines(int fd, const struct options *o, struct counts *c)
 	if (!nl)
 		nl = pick_nl_kernel(o->debug);
 
+	if (o->threads > 1) {
+		int r = tal_count_lines_mt(fd, o->threads, nl, &c->lines,
+					   &c->bytes);
+
+		if (r >= 0) {
+			if (o->debug)
+				fprintf(stderr, "%s: counted with %d threads\n",
+					tal_prog, o->threads);
+			return r;
+		}
+	}
 	if (tal_map_acquire(fd, &m)) {
 		int err = mapped_lines(nl, &m, c);
 
