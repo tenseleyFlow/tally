@@ -23,13 +23,17 @@ else
 	srcdir="tests/.work/coreutils-$TAG"
 	if [ ! -f "$srcdir/src/wc.c" ]; then
 		tb="tests/.work/coreutils-$TAG.tar.xz"
+		fetch_rc=0
 		if command -v curl >/dev/null 2>&1; then
-			curl -sSL -o "$tb" "$TARBALL_URL"
+			curl -sSL -o "$tb" "$TARBALL_URL" || fetch_rc=$?
 		elif command -v fetch >/dev/null 2>&1; then
-			fetch -o "$tb" "$TARBALL_URL"
+			fetch -o "$tb" "$TARBALL_URL" || fetch_rc=$?
 		else
-			wget -qO "$tb" "$TARBALL_URL"
+			wget -qO "$tb" "$TARBALL_URL" || fetch_rc=$?
 		fi
+		[ "$fetch_rc" = 0 ] || {
+			echo "build-ref: FETCH FAILED (rc=$fetch_rc): $TARBALL_URL" >&2
+			exit 1; }
 		if [ "$TAG" = 9.11 ]; then
 			got=$( (sha256sum "$tb" 2>/dev/null || sha256 -q "$tb" | sed 's/$/  x/') | awk '{print $1}')
 			[ "$got" = "$SHA256_9_11" ] || {
@@ -57,8 +61,8 @@ command -v gmake >/dev/null 2>&1 && MAKE=gmake
 	     || "$MAKE" -s -j"$njobs" >>build.log 2>&1 \
 	     || "$MAKE" -s -j"$njobs" src/wc >>build.log 2>&1; } ) || {
 	echo "build-ref: coreutils build failed; tail of logs:" >&2
-	tail -5 "$bld/configure.log" 2>/dev/null >&2
-	tail -20 "$bld/build.log" 2>/dev/null >&2
+	tail -5 "$bld/configure.log" >&2 2>&1 || echo "  (no configure.log)" >&2
+	tail -20 "$bld/build.log" >&2 2>&1 || echo "  (no build.log)" >&2
 	exit 1
 }
 cp "$bld/src/wc" "$bin"
