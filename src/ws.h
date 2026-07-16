@@ -114,6 +114,11 @@ void tal_swc_sb(const unsigned char *p, size_t n, struct counts *c,
 /* Multibyte locales (any charset): decode + classify. */
 void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 		struct wstate *st);
+/* Chars-only stepper (decode + pend semantics, no word/width work) for the
+ * -m pass's scalar spans. Pending bytes at EOF are errors: no chars. */
+void tal_u8scalar(const unsigned char *p, size_t n, struct counts *c,
+		  struct wstate *st);
+
 /* EOF: pending bytes are encoding errors (constituents); flush linepos. */
 void tal_swc_finish(struct counts *c, struct wstate *st);
 

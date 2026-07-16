@@ -328,6 +328,72 @@ out:
 	st->in_word = in_word;
 }
 
+/* Chars-only scalar stepper for the -m pass's rejected/held spans: same
+ * decode and pend semantics as the oracle, none of the word/width work the
+ * u8 pass throws away (P3: the full oracle held binary -m to 1.5x). */
+void tal_u8scalar(const unsigned char *p, size_t n, struct counts *c,
+		  struct wstate *st)
+{
+	size_t i = 0;
+
+	while (i < n) {
+		if (st->npend == 0) {
+			while (i < n && p[i] < 0x80) {
+				c->lines += p[i] == '\n';
+				c->chars++;
+				i++;
+			}
+			/* never a char start in UTF-8: one-byte errors */
+			while (i < n && ((p[i] >= 0x80 && p[i] < 0xC2) ||
+					 p[i] >= 0xF5))
+				i++;
+			if (i < n && p[i] < 0x80)
+				continue;
+			if (i >= n)
+				break;
+			unsigned long cp;
+			int r = u8dec(p + i, n - i, &cp);
+
+			if (r > 0) {
+				c->lines += cp == '\n';
+				c->chars++;
+				i += (size_t)r;
+				continue;
+			}
+			if (r < 0) {
+				i++;
+				continue;
+			}
+			while (i < n)
+				st->pend[st->npend++] = p[i++];
+			return;
+		}
+		while (st->npend < sizeof st->pend && i < n)
+			st->pend[st->npend++] = p[i++];
+		while (st->npend) {
+			unsigned long cp;
+			int r = u8dec(st->pend, st->npend, &cp);
+
+			if (r == 0) {
+				if (i < n && st->npend < sizeof st->pend)
+					break; /* refill */
+				if (i >= n)
+					return; /* carry */
+				r = -1;
+			}
+			size_t k = 1;
+
+			if (r > 0) {
+				c->lines += cp == '\n';
+				c->chars++;
+				k = (size_t)r;
+			}
+			st->npend -= (unsigned)k;
+			memmove(st->pend, st->pend + k, st->npend);
+		}
+	}
+}
+
 void tal_swc_finish(struct counts *c, struct wstate *st)
 {
 	/* EOF with a pending valid prefix: GNU consumes each byte through the
