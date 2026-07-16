@@ -394,6 +394,93 @@ void tal_u8scalar(const unsigned char *p, size_t n, struct counts *c,
 	}
 }
 
+/* Width-only walker for the -L pass's oracle windows (utf8 locales): the
+ * classify_byte/classify_wc width rules without the word machinery the -L
+ * pass throws away (roadmap P4: the full oracle held utf8 -L to a glibc
+ * tie). ASCII: \n \r \f reset linepos into linelength, \t advances to the
+ * next stop, the rest add is_print[]. Multibyte: wcwidth of the decoded
+ * char when positive; encoding errors and incomplete tails add nothing
+ * (same pend semantics as the oracle). */
+void tal_lwalk(const unsigned char *p, size_t n, struct counts *c,
+	       struct wstate *st)
+{
+	size_t i = 0;
+
+	while (i < n) {
+		if (st->npend == 0) {
+			while (i < n && p[i] < 0x80) {
+				unsigned char b = p[i++];
+
+				switch (b) {
+				case '\n':
+				case '\r':
+				case '\f':
+					if (st->linepos > c->linelength)
+						c->linelength = st->linepos;
+					st->linepos = 0;
+					break;
+				case '\t':
+					st->linepos += 8 - st->linepos % 8;
+					break;
+				default:
+					st->linepos += tal_ws.is_print[b];
+				}
+			}
+			while (i < n && p[i] >= 0x80) {
+				/* never a char start in UTF-8: width 0 */
+				if (p[i] < 0xC2 || p[i] >= 0xF5) {
+					i++;
+					continue;
+				}
+				unsigned long cp;
+				int r = u8dec(p + i, n - i, &cp);
+
+				if (r > 0) {
+					int w = tal_wcwidth(cp);
+
+					if (w > 0)
+						st->linepos += (unsigned)w;
+					i += (size_t)r;
+				} else if (r < 0) {
+					i++;
+				} else {
+					while (i < n)
+						st->pend[st->npend++] = p[i++];
+					return;
+				}
+			}
+			if (i >= n)
+				break;
+			continue;
+		}
+		while (st->npend < sizeof st->pend && i < n)
+			st->pend[st->npend++] = p[i++];
+		while (st->npend) {
+			unsigned long cp;
+			int r = u8dec(st->pend, st->npend, &cp);
+
+			if (r == 0) {
+				if (i < n && st->npend < sizeof st->pend)
+					break; /* refill */
+				if (i >= n)
+					return; /* carry */
+				r = -1;
+			}
+			size_t k = 1;
+
+			if (r > 0) {
+				int w = tal_wcwidth(cp);
+
+				if (w > 0)
+					st->linepos += (unsigned)w;
+				k = (size_t)r;
+			}
+			st->npend -= (unsigned)k;
+			memmove(st->pend, st->pend + k, st->npend);
+		}
+	}
+}
+
 void tal_swc_finish(struct counts *c, struct wstate *st)
 {
 	/* EOF with a pending valid prefix: GNU consumes each byte through the

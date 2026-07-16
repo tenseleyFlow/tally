@@ -119,6 +119,11 @@ void tal_swc_mb(const unsigned char *p, size_t n, struct counts *c,
 void tal_u8scalar(const unsigned char *p, size_t n, struct counts *c,
 		  struct wstate *st);
 
+/* Width-only walker (classify width rules, no word work) for the -L pass's
+ * oracle windows in utf8 locales. */
+void tal_lwalk(const unsigned char *p, size_t n, struct counts *c,
+	       struct wstate *st);
+
 /* EOF: pending bytes are encoding errors (constituents); flush linepos. */
 void tal_swc_finish(struct counts *c, struct wstate *st);
 

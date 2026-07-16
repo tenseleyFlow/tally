@@ -270,7 +270,9 @@ static void lscan_chunk(lscan_fn lk, const unsigned char *p, size_t len,
 		}
 		size_t step = len - off < win ? len - off : win;
 
-		if (tal_ws.multibyte)
+		if (tal_ws.utf8)
+			tal_lwalk(p + off, step, ltmp, lst);
+		else if (tal_ws.multibyte)
 			tal_swc_mb(p + off, step, ltmp, lst);
 		else
 			tal_swc_sb(p + off, step, ltmp, lst);
