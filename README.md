@@ -12,8 +12,9 @@ GNU wc counts lines with SIMD but counts words with a scalar per-character
 loop through the locale machinery. On the default invocation — the one every
 user runs — that loop is the whole cost. tally fuses line, word, and byte
 counting into one branchless SIMD pass (SSE2/AVX2 on x86-64, NEON on arm64)
-that classifies UTF-8 whitespace without decoding, and validates UTF-8 for
-`-m` structurally instead of one `mbrtoc32()` call per character.
+that classifies UTF-8 whitespace without decoding, and counts `-m` characters
+as valid-sequence starts — position-independent, so even hostile binary input
+stays at vector speed instead of one `mbrtoc32()` call per character.
 
 Parity is enforced, not aspired to: a golden suite diffs tally against a
 pinned GNU wc built from source — stdout, stderr, and exit codes, across
@@ -32,8 +33,8 @@ Apple Silicon.
 | `wc FILE` (Cyrillic/CJK) | 123x | 73x |
 | `wc FILE` (smart-quote prose) | 15x | 5.7x |
 | `wc FILE` (binary) | 39x | 27x |
-| `-m` (UTF-8) | 68x | 38x |
-| `-m` (binary, worst case) | 1.5x | 1.3x |
+| `-m` (UTF-8) | 51x | 47x |
+| `-m` (binary) | 60x | 44x |
 | `-L` (ASCII) | 10x | 5.2x |
 | `-L` (UTF-8) | 1.8x | 1.4x |
 | `-l` (big file) | 1.0x (read-bound tie) | 2.8-6.1x |
